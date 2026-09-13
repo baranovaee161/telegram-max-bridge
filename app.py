@@ -607,13 +607,7 @@ def max_request(
             url,
             headers=headers,
             timeout=60,
-
-            # -------------------------------------------------
-            # ИСПРАВЛЕНИЕ SSL
-            # -------------------------------------------------
-
             verify=False,
-
             **kwargs
         )
 
@@ -638,7 +632,17 @@ def max_request(
 
             return {}
 
-        return response.json()
+        try:
+
+            return response.json()
+
+        except Exception:
+
+            logging.warning(
+                "MAX API response is not JSON"
+            )
+
+            return {}
 
     except Exception:
 
@@ -707,6 +711,98 @@ def send_max_text(text):
 
 
 # =========================================================
+# NORMALIZE MAX FILENAME
+# =========================================================
+
+def normalize_max_filename(
+    filename,
+    file_type
+):
+
+    if not filename:
+
+        if file_type == "audio":
+            return "audio.ogg"
+
+        if file_type == "image":
+            return "image.jpg"
+
+        if file_type == "video":
+            return "video.mp4"
+
+        return "file"
+
+    filename = os.path.basename(
+        filename
+    )
+
+    lower_name = filename.lower()
+
+    # -----------------------------------------------------
+    # Telegram voice часто приходит как .oga.
+    #
+    # Сам файл при этом является OGG/Opus.
+    # MAX может отклонять расширение .oga.
+    # Передаём его как .ogg.
+    # -----------------------------------------------------
+
+    if file_type == "audio":
+
+        if lower_name.endswith(".oga"):
+
+            filename = (
+                filename[:-4]
+                + ".ogg"
+            )
+
+        elif not (
+            lower_name.endswith(".ogg")
+            or lower_name.endswith(".mp3")
+            or lower_name.endswith(".wav")
+            or lower_name.endswith(".m4a")
+            or lower_name.endswith(".aac")
+            or lower_name.endswith(".opus")
+        ):
+
+            filename += ".ogg"
+
+    # -----------------------------------------------------
+    # IMAGE
+    # -----------------------------------------------------
+
+    if file_type == "image":
+
+        if not (
+            lower_name.endswith(".jpg")
+            or lower_name.endswith(".jpeg")
+            or lower_name.endswith(".png")
+            or lower_name.endswith(".gif")
+            or lower_name.endswith(".bmp")
+            or lower_name.endswith(".tiff")
+            or lower_name.endswith(".heic")
+        ):
+
+            filename += ".jpg"
+
+    # -----------------------------------------------------
+    # VIDEO
+    # -----------------------------------------------------
+
+    if file_type == "video":
+
+        if not (
+            lower_name.endswith(".mp4")
+            or lower_name.endswith(".mov")
+            or lower_name.endswith(".mkv")
+            or lower_name.endswith(".webm")
+        ):
+
+            filename += ".mp4"
+
+    return filename
+
+
+# =========================================================
 # MAX UPLOAD
 # =========================================================
 
@@ -724,23 +820,37 @@ def upload_to_max(
 
         return None
 
+    # -----------------------------------------------------
+    # Нормализуем имя файла
+    # -----------------------------------------------------
+
+    original_filename = filename
+
+    filename = normalize_max_filename(
+        filename,
+        file_type
+    )
+
+    logging.info(
+        "MAX upload filename: %s -> %s",
+        original_filename,
+        filename
+    )
+
     try:
+
+        # -------------------------------------------------
+        # STEP 1
+        # Получаем URL загрузки
+        # -------------------------------------------------
 
         response = requests.post(
             f"{MAX_API}/uploads",
-
             headers=max_headers(),
-
             params={
                 "type": file_type
             },
-
             timeout=60,
-
-            # -------------------------------------------------
-            # ИСПРАВЛЕНИЕ SSL
-            # -------------------------------------------------
-
             verify=False
         )
 
@@ -777,9 +887,44 @@ def upload_to_max(
 
             return None
 
+        logging.info(
+            "MAX upload URL received"
+        )
+
         # -------------------------------------------------
-        # ЗАГРУЗКА ФАЙЛА
+        # STEP 2
+        # Загружаем сам файл.
+        #
+        # ВАЖНО:
+        # Не задаём Content-Type вручную.
+        # requests сам создаёт правильный
+        # multipart/form-data boundary.
         # -------------------------------------------------
+
+        mime_type = "application/octet-stream"
+
+        if file_type == "audio":
+
+            mime_type = "audio/ogg"
+
+        elif file_type == "image":
+
+            mime_type = "image/jpeg"
+
+            lower_filename = filename.lower()
+
+            if lower_filename.endswith(".png"):
+                mime_type = "image/png"
+
+            elif lower_filename.endswith(".gif"):
+                mime_type = "image/gif"
+
+            elif lower_filename.endswith(".webp"):
+                mime_type = "image/webp"
+
+        elif file_type == "video":
+
+            mime_type = "video/mp4"
 
         upload_response = requests.post(
             upload_url,
@@ -787,7 +932,8 @@ def upload_to_max(
             files={
                 "data": (
                     filename,
-                    file_bytes
+                    file_bytes,
+                    mime_type
                 )
             },
 
@@ -799,7 +945,7 @@ def upload_to_max(
         logging.info(
             "MAX file upload -> %s %s",
             upload_response.status_code,
-            upload_response.text[:3000]
+            upload_response.text[:5000]
         )
 
         if not upload_response.ok:
@@ -810,9 +956,26 @@ def upload_to_max(
 
             return None
 
-        upload_result = (
-            upload_response.json()
-        )
+        # -------------------------------------------------
+        # STEP 3
+        # Получаем token
+        # -------------------------------------------------
+
+        try:
+
+            upload_result = (
+                upload_response.json()
+            )
+
+        except Exception:
+
+            logging.error(
+                "MAX file upload returned "
+                "non-JSON response: %s",
+                upload_response.text[:5000]
+            )
+
+            return None
 
         token = (
             upload_result.get("token")
@@ -890,6 +1053,11 @@ def send_max_attachment(
         ]
     }
 
+    # -----------------------------------------------------
+    # MAX может ещё обрабатывать файл после upload.
+    # Поэтому делаем несколько попыток.
+    # -----------------------------------------------------
+
     delays = [
         1,
         2,
@@ -965,6 +1133,15 @@ def send_max_audio(
     audio_bytes,
     filename="voice.ogg"
 ):
+
+    # -----------------------------------------------------
+    # Telegram voice .oga -> MAX .ogg
+    # -----------------------------------------------------
+
+    filename = normalize_max_filename(
+        filename,
+        "audio"
+    )
 
     return send_max_attachment(
         audio_bytes,
@@ -1200,6 +1377,19 @@ def handle_telegram_message(message):
                     filename = os.path.basename(
                         file_path
                     )
+
+                    # -----------------------------------------
+                    # ВАЖНО:
+                    # Telegram обычно даёт file_XX.oga.
+                    # Для MAX принудительно используем .ogg.
+                    # -----------------------------------------
+
+                    if filename.lower().endswith(".oga"):
+
+                        filename = (
+                            filename[:-4]
+                            + ".ogg"
+                        )
 
                     logging.info(
                         "Telegram -> MAX VOICE: %s",
@@ -1961,4 +2151,4 @@ if __name__ == "__main__":
     app.run(
         host="0.0.0.0",
         port=port
-            )
+                )
