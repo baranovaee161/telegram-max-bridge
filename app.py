@@ -1,7 +1,14 @@
 import os
+import time
 import logging
 import requests
+
 from flask import Flask, request, jsonify
+
+
+# =========================================================
+# APPLICATION
+# =========================================================
 
 app = Flask(__name__)
 
@@ -9,6 +16,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s"
 )
+
 
 # =========================================================
 # НАСТРОЙКИ
@@ -24,22 +32,43 @@ MAX_WEBHOOK_SECRET = os.getenv("MAX_WEBHOOK_SECRET")
 
 MAX_API = "https://platform-api2.max.ru"
 
+
 # =========================================================
-# ПРОВЕРКА НАСТРОЕК
+# START LOG
 # =========================================================
 
-logging.info("=== APPLICATION START ===")
-logging.info("TELEGRAM_TOKEN: %s", "SET" if TELEGRAM_TOKEN else "NOT SET")
-logging.info("MAX_TOKEN: %s", "SET" if MAX_TOKEN else "NOT SET")
-logging.info("TELEGRAM_CHAT_ID: %s", TELEGRAM_CHAT_ID)
-logging.info("MAX_CHAT_ID: %s", MAX_CHAT_ID)
+logging.info("========================================")
+logging.info("=== TELEGRAM <-> MAX BRIDGE START ===")
+logging.info("========================================")
+
+logging.info(
+    "TELEGRAM_TOKEN: %s",
+    "SET" if TELEGRAM_TOKEN else "NOT SET"
+)
+
+logging.info(
+    "MAX_TOKEN: %s",
+    "SET" if MAX_TOKEN else "NOT SET"
+)
+
+logging.info(
+    "TELEGRAM_CHAT_ID: %s",
+    TELEGRAM_CHAT_ID
+)
+
+logging.info(
+    "MAX_CHAT_ID: %s",
+    MAX_CHAT_ID
+)
+
 logging.info(
     "MAX_WEBHOOK_SECRET: %s",
     "SET" if MAX_WEBHOOK_SECRET else "NOT SET"
 )
 
+
 # =========================================================
-# БАЗОВЫЕ ROUTES
+# BASIC ROUTES
 # =========================================================
 
 @app.route("/", methods=["GET"])
@@ -81,7 +110,7 @@ def telegram_api(method, data=None, files=None):
             "Telegram API %s -> %s %s",
             method,
             response.status_code,
-            response.text[:500]
+            response.text[:1000]
         )
 
         if not response.ok:
@@ -93,6 +122,10 @@ def telegram_api(method, data=None, files=None):
         logging.exception("Telegram API error")
         return None
 
+
+# =========================================================
+# TELEGRAM SEND TEXT
+# =========================================================
 
 def send_telegram_text(text):
     if not TELEGRAM_CHAT_ID:
@@ -110,7 +143,15 @@ def send_telegram_text(text):
     return bool(result and result.get("ok"))
 
 
-def send_telegram_photo(photo_bytes, filename="photo.jpg", caption=None):
+# =========================================================
+# TELEGRAM SEND PHOTO
+# =========================================================
+
+def send_telegram_photo(
+    photo_bytes,
+    filename="photo.jpg",
+    caption=None
+):
     if not TELEGRAM_CHAT_ID:
         logging.error("TELEGRAM_CHAT_ID is not configured")
         return False
@@ -139,7 +180,14 @@ def send_telegram_photo(photo_bytes, filename="photo.jpg", caption=None):
     return bool(result and result.get("ok"))
 
 
-def send_telegram_voice(audio_bytes, filename="voice.ogg"):
+# =========================================================
+# TELEGRAM SEND VOICE
+# =========================================================
+
+def send_telegram_voice(
+    audio_bytes,
+    filename="voice.ogg"
+):
     if not TELEGRAM_CHAT_ID:
         logging.error("TELEGRAM_CHAT_ID is not configured")
         return False
@@ -163,7 +211,42 @@ def send_telegram_voice(audio_bytes, filename="voice.ogg"):
     return bool(result and result.get("ok"))
 
 
+# =========================================================
+# TELEGRAM SEND DOCUMENT
+# =========================================================
+
+def send_telegram_document(
+    file_bytes,
+    filename="file"
+):
+    if not TELEGRAM_CHAT_ID:
+        logging.error("TELEGRAM_CHAT_ID is not configured")
+        return False
+
+    files = {
+        "document": (
+            filename,
+            file_bytes
+        )
+    }
+
+    result = telegram_api(
+        "sendDocument",
+        data={
+            "chat_id": TELEGRAM_CHAT_ID
+        },
+        files=files
+    )
+
+    return bool(result and result.get("ok"))
+
+
+# =========================================================
+# GET TELEGRAM FILE
+# =========================================================
+
 def get_telegram_file(file_id):
+
     if not TELEGRAM_TOKEN:
         return None
 
@@ -188,7 +271,11 @@ def get_telegram_file(file_id):
     )
 
     try:
-        response = requests.get(url, timeout=60)
+
+        response = requests.get(
+            url,
+            timeout=60
+        )
 
         logging.info(
             "Telegram file download -> %s",
@@ -201,7 +288,10 @@ def get_telegram_file(file_id):
         return response.content, file_path
 
     except Exception:
-        logging.exception("Telegram file download error")
+        logging.exception(
+            "Telegram file download error"
+        )
+
         return None
 
 
@@ -210,24 +300,37 @@ def get_telegram_file(file_id):
 # =========================================================
 
 def max_headers():
-    headers = {
+
+    return {
         "Authorization": MAX_TOKEN
     }
 
-    return headers
 
+def max_request(
+    method,
+    endpoint,
+    **kwargs
+):
 
-def max_request(method, endpoint, **kwargs):
     if not MAX_TOKEN:
-        logging.error("MAX_TOKEN is not configured")
+        logging.error(
+            "MAX_TOKEN is not configured"
+        )
         return None
 
     url = f"{MAX_API}{endpoint}"
 
-    headers = kwargs.pop("headers", {})
-    headers.update(max_headers())
+    headers = kwargs.pop(
+        "headers",
+        {}
+    )
+
+    headers.update(
+        max_headers()
+    )
 
     try:
+
         response = requests.request(
             method,
             url,
@@ -241,7 +344,7 @@ def max_request(method, endpoint, **kwargs):
             method,
             endpoint,
             response.status_code,
-            response.text[:1000]
+            response.text[:2000]
         )
 
         if not response.ok:
@@ -253,45 +356,95 @@ def max_request(method, endpoint, **kwargs):
         return response.json()
 
     except Exception:
-        logging.exception("MAX API error")
+        logging.exception(
+            "MAX API error"
+        )
+
         return None
 
 
+# =========================================================
+# MAX SEND TEXT
+# =========================================================
+
 def send_max_text(text):
+
     if not MAX_CHAT_ID:
-        logging.error("MAX_CHAT_ID is not configured")
+        logging.error(
+            "MAX_CHAT_ID is not configured"
+        )
+        return False
+
+    try:
+
+        chat_id = int(MAX_CHAT_ID)
+
+    except Exception:
+
+        logging.error(
+            "MAX_CHAT_ID is not an integer: %s",
+            MAX_CHAT_ID
+        )
+
         return False
 
     payload = {
-        "text": text,
-        "chat_id": int(MAX_CHAT_ID)
+        "text": text
     }
 
     result = max_request(
         "POST",
         "/messages",
+        params={
+            "chat_id": chat_id
+        },
         json=payload
     )
 
-    return result is not None
+    if result is None:
+        logging.error(
+            "MAX text message FAILED"
+        )
+        return False
+
+    logging.info(
+        "MAX text message SENT"
+    )
+
+    return True
 
 
-def upload_to_max(file_bytes, file_type, filename):
+# =========================================================
+# MAX UPLOAD
+# =========================================================
+
+def upload_to_max(
+    file_bytes,
+    file_type,
+    filename
+):
     """
-    Загружает файл в MAX и возвращает token.
+    Загружает файл в MAX.
+
     file_type:
-      image
-      audio
-      video
-      file
+        image
+        audio
+        video
+        file
     """
 
     if not MAX_TOKEN:
-        logging.error("MAX_TOKEN is not configured")
+        logging.error(
+            "MAX_TOKEN is not configured"
+        )
         return None
 
     try:
-        # Получаем upload URL
+
+        # -------------------------------------------------
+        # 1. Получаем URL загрузки
+        # -------------------------------------------------
+
         response = requests.post(
             f"{MAX_API}/uploads",
             headers=max_headers(),
@@ -304,7 +457,7 @@ def upload_to_max(file_bytes, file_type, filename):
         logging.info(
             "MAX upload initialization -> %s %s",
             response.status_code,
-            response.text[:1000]
+            response.text[:2000]
         )
 
         if not response.ok:
@@ -312,20 +465,29 @@ def upload_to_max(file_bytes, file_type, filename):
 
         upload_data = response.json()
 
-        upload_url = upload_data.get("url")
+        upload_url = upload_data.get(
+            "url"
+        )
+
+        initial_token = upload_data.get(
+            "token"
+        )
 
         if not upload_url:
             logging.error(
-                "MAX upload URL was not returned: %s",
+                "MAX upload URL missing: %s",
                 upload_data
             )
             return None
 
-        # Загружаем сам файл
+        # -------------------------------------------------
+        # 2. Загружаем файл
+        # -------------------------------------------------
+
         upload_response = requests.post(
             upload_url,
             files={
-                "file": (
+                "data": (
                     filename,
                     file_bytes
                 )
@@ -336,107 +498,78 @@ def upload_to_max(file_bytes, file_type, filename):
         logging.info(
             "MAX file upload -> %s %s",
             upload_response.status_code,
-            upload_response.text[:1000]
+            upload_response.text[:2000]
         )
 
         if not upload_response.ok:
             return None
 
-        result = upload_response.json()
+        upload_result = upload_response.json()
 
-        token = result.get("token")
+        token = (
+            upload_result.get("token")
+            or initial_token
+        )
 
         if not token:
             logging.error(
-                "MAX upload token was not returned: %s",
-                result
+                "MAX upload token missing: %s",
+                upload_result
             )
             return None
+
+        logging.info(
+            "MAX upload token received"
+        )
 
         return token
 
     except Exception:
-        logging.exception("MAX upload error")
+
+        logging.exception(
+            "MAX upload error"
+        )
+
         return None
 
 
-def send_max_image(image_bytes, filename="photo.jpg"):
-    token = upload_to_max(
-        image_bytes,
-        "image",
-        filename
-    )
+# =========================================================
+# MAX SEND ATTACHMENT
+# =========================================================
 
-    if not token:
-        return False
+def send_max_attachment(
+    file_bytes,
+    file_type,
+    filename,
+    attachment_type
+):
 
-    payload = {
-        "chat_id": int(MAX_CHAT_ID),
-        "attachments": [
-            {
-                "type": "image",
-                "payload": {
-                    "token": token
-                }
-            }
-        ]
-    }
-
-    result = max_request(
-        "POST",
-        "/messages",
-        json=payload
-    )
-
-    return result is not None
-
-
-def send_max_audio(audio_bytes, filename="voice.ogg"):
-    token = upload_to_max(
-        audio_bytes,
-        "audio",
-        filename
-    )
-
-    if not token:
-        return False
-
-    payload = {
-        "chat_id": int(MAX_CHAT_ID),
-        "attachments": [
-            {
-                "type": "audio",
-                "payload": {
-                    "token": token
-                }
-            }
-        ]
-    }
-
-    result = max_request(
-        "POST",
-        "/messages",
-        json=payload
-    )
-
-    return result is not None
-
-
-def send_max_file(file_bytes, filename="file"):
     token = upload_to_max(
         file_bytes,
-        "file",
+        file_type,
         filename
     )
 
     if not token:
         return False
 
+    try:
+
+        chat_id = int(MAX_CHAT_ID)
+
+    except Exception:
+
+        logging.error(
+            "Invalid MAX_CHAT_ID: %s",
+            MAX_CHAT_ID
+        )
+
+        return False
+
     payload = {
-        "chat_id": int(MAX_CHAT_ID),
         "attachments": [
             {
-                "type": "file",
+                "type": attachment_type,
                 "payload": {
                     "token": token
                 }
@@ -444,36 +577,165 @@ def send_max_file(file_bytes, filename="file"):
         ]
     }
 
-    result = max_request(
-        "POST",
-        "/messages",
-        json=payload
+    # -----------------------------------------------------
+    # MAX иногда ещё обрабатывает файл после upload.
+    # Делаем несколько попыток.
+    # -----------------------------------------------------
+
+    delays = [
+        1,
+        2,
+        4,
+        6
+    ]
+
+    for attempt, delay in enumerate(
+        delays,
+        start=1
+    ):
+
+        if attempt > 1:
+            time.sleep(delay)
+
+        logging.info(
+            "MAX attachment send attempt %s",
+            attempt
+        )
+
+        result = max_request(
+            "POST",
+            "/messages",
+            params={
+                "chat_id": chat_id
+            },
+            json=payload
+        )
+
+        if result is not None:
+
+            logging.info(
+                "MAX attachment SENT successfully"
+            )
+
+            return True
+
+        logging.warning(
+            "MAX attachment attempt %s failed",
+            attempt
+        )
+
+    logging.error(
+        "MAX attachment FAILED after all attempts"
     )
 
-    return result is not None
+    return False
 
 
 # =========================================================
-# ИМЯ ОТПРАВИТЕЛЯ TELEGRAM
+# MAX SEND IMAGE
+# =========================================================
+
+def send_max_image(
+    image_bytes,
+    filename="photo.jpg"
+):
+
+    return send_max_attachment(
+        image_bytes,
+        "image",
+        filename,
+        "image"
+    )
+
+
+# =========================================================
+# MAX SEND AUDIO
+# =========================================================
+
+def send_max_audio(
+    audio_bytes,
+    filename="voice.ogg"
+):
+
+    return send_max_attachment(
+        audio_bytes,
+        "audio",
+        filename,
+        "audio"
+    )
+
+
+# =========================================================
+# MAX SEND FILE
+# =========================================================
+
+def send_max_file(
+    file_bytes,
+    filename="file"
+):
+
+    return send_max_attachment(
+        file_bytes,
+        "file",
+        filename,
+        "file"
+    )
+
+
+# =========================================================
+# TELEGRAM SENDER NAME
 # =========================================================
 
 def telegram_sender_name(message):
-    sender = message.get("from", {})
 
-    first_name = sender.get("first_name", "")
-    last_name = sender.get("last_name", "")
-    username = sender.get("username", "")
+    sender = message.get(
+        "from",
+        {}
+    )
+
+    if not isinstance(sender, dict):
+        return "Пользователь Telegram"
+
+    username = sender.get(
+        "username"
+    )
+
+    first_name = sender.get(
+        "first_name",
+        ""
+    )
+
+    last_name = sender.get(
+        "last_name",
+        ""
+    )
 
     full_name = " ".join(
-        x for x in [first_name, last_name]
+        x
+        for x in [
+            first_name,
+            last_name
+        ]
         if x
     ).strip()
+
+    # -----------------------------------------------------
+    # ВАЖНО:
+    # Сначала username.
+    # -----------------------------------------------------
+
+    if username:
+        return f"@{username}"
 
     if full_name:
         return full_name
 
-    if username:
-        return f"@{username}"
+    user_id = sender.get(
+        "id"
+    )
+
+    if user_id:
+        return f"Telegram ID {user_id}"
 
     return "Пользователь Telegram"
 
@@ -483,51 +745,86 @@ def telegram_sender_name(message):
 # =========================================================
 
 def handle_telegram_message(message):
-    if not isinstance(message, dict):
+
+    if not isinstance(
+        message,
+        dict
+    ):
         return
 
-    sender_name = telegram_sender_name(message)
+    sender_name = telegram_sender_name(
+        message
+    )
 
-    # -----------------------------
-    # ТЕКСТ
-    # -----------------------------
+    logging.info(
+        "Telegram sender: %s",
+        sender_name
+    )
 
-    text = message.get("text")
+    # =====================================================
+    # TEXT
+    # =====================================================
+
+    text = message.get(
+        "text"
+    )
 
     if text:
-        max_text = f"💬 {sender_name}:\n{text}"
+
+        max_text = (
+            f"👤 {sender_name}\n"
+            f"{text}"
+        )
 
         logging.info(
-            "Telegram -> MAX text: %s",
+            "Telegram -> MAX TEXT: %s",
             max_text
         )
 
-        send_max_text(max_text)
+        send_max_text(
+            max_text
+        )
 
-    # -----------------------------
-    # ФОТО
-    # -----------------------------
+    # =====================================================
+    # PHOTO
+    # =====================================================
 
-    photo = message.get("photo")
+    photo = message.get(
+        "photo"
+    )
 
     if photo:
+
         try:
-            # Берём самое большое фото
+
             largest_photo = photo[-1]
 
-            file_id = largest_photo.get("file_id")
+            file_id = largest_photo.get(
+                "file_id"
+            )
 
             if file_id:
-                downloaded = get_telegram_file(file_id)
+
+                downloaded = get_telegram_file(
+                    file_id
+                )
 
                 if downloaded:
+
                     file_bytes, file_path = downloaded
 
-                    filename = os.path.basename(file_path)
+                    filename = os.path.basename(
+                        file_path
+                    )
 
                     logging.info(
-                        "Telegram -> MAX photo: %s",
+                        "Telegram -> MAX PHOTO: %s",
                         filename
+                    )
+
+                    # Сначала подпись с автором
+                    send_max_text(
+                        f"📷 {sender_name} отправил(а) фото:"
                     )
 
                     send_max_image(
@@ -536,31 +833,48 @@ def handle_telegram_message(message):
                     )
 
         except Exception:
+
             logging.exception(
                 "Error processing Telegram photo"
             )
 
-    # -----------------------------
-    # ГОЛОСОВОЕ
-    # -----------------------------
+    # =====================================================
+    # VOICE
+    # =====================================================
 
-    voice = message.get("voice")
+    voice = message.get(
+        "voice"
+    )
 
     if voice:
+
         try:
-            file_id = voice.get("file_id")
+
+            file_id = voice.get(
+                "file_id"
+            )
 
             if file_id:
-                downloaded = get_telegram_file(file_id)
+
+                downloaded = get_telegram_file(
+                    file_id
+                )
 
                 if downloaded:
+
                     file_bytes, file_path = downloaded
 
-                    filename = os.path.basename(file_path)
+                    filename = os.path.basename(
+                        file_path
+                    )
 
                     logging.info(
-                        "Telegram -> MAX voice: %s",
+                        "Telegram -> MAX VOICE: %s",
                         filename
+                    )
+
+                    send_max_text(
+                        f"🎤 {sender_name} отправил(а) голосовое:"
                     )
 
                     send_max_audio(
@@ -569,33 +883,53 @@ def handle_telegram_message(message):
                     )
 
         except Exception:
+
             logging.exception(
                 "Error processing Telegram voice"
             )
 
-    # -----------------------------
+    # =====================================================
     # AUDIO
-    # -----------------------------
+    # =====================================================
 
-    audio = message.get("audio")
+    audio = message.get(
+        "audio"
+    )
 
     if audio:
+
         try:
-            file_id = audio.get("file_id")
+
+            file_id = audio.get(
+                "file_id"
+            )
 
             if file_id:
-                downloaded = get_telegram_file(file_id)
+
+                downloaded = get_telegram_file(
+                    file_id
+                )
 
                 if downloaded:
+
                     file_bytes, file_path = downloaded
 
-                    filename = audio.get(
-                        "file_name"
-                    ) or os.path.basename(file_path)
+                    filename = (
+                        audio.get(
+                            "file_name"
+                        )
+                        or os.path.basename(
+                            file_path
+                        )
+                    )
 
                     logging.info(
-                        "Telegram -> MAX audio: %s",
+                        "Telegram -> MAX AUDIO: %s",
                         filename
+                    )
+
+                    send_max_text(
+                        f"🎵 {sender_name} отправил(а) аудио:"
                     )
 
                     send_max_audio(
@@ -604,8 +938,65 @@ def handle_telegram_message(message):
                     )
 
         except Exception:
+
             logging.exception(
                 "Error processing Telegram audio"
+            )
+
+    # =====================================================
+    # DOCUMENT
+    # =====================================================
+
+    document = message.get(
+        "document"
+    )
+
+    if document:
+
+        try:
+
+            file_id = document.get(
+                "file_id"
+            )
+
+            if file_id:
+
+                downloaded = get_telegram_file(
+                    file_id
+                )
+
+                if downloaded:
+
+                    file_bytes, file_path = downloaded
+
+                    filename = (
+                        document.get(
+                            "file_name"
+                        )
+                        or os.path.basename(
+                            file_path
+                        )
+                        or "file"
+                    )
+
+                    logging.info(
+                        "Telegram -> MAX DOCUMENT: %s",
+                        filename
+                    )
+
+                    send_max_text(
+                        f"📎 {sender_name} отправил(а) файл:"
+                    )
+
+                    send_max_file(
+                        file_bytes,
+                        filename
+                    )
+
+        except Exception:
+
+            logging.exception(
+                "Error processing Telegram document"
             )
 
 
@@ -613,116 +1004,208 @@ def handle_telegram_message(message):
 # TELEGRAM WEBHOOK
 # =========================================================
 
-@app.route("/telegram/webhook", methods=["POST"])
+@app.route(
+    "/telegram/webhook",
+    methods=["POST"]
+)
 def telegram_webhook():
 
-    logging.info("===== TELEGRAM WEBHOOK =====")
+    logging.info(
+        "===== TELEGRAM WEBHOOK ====="
+    )
 
     try:
+
         update = request.get_json(
             silent=True
         )
 
         logging.info(
             "Telegram update: %s",
-            str(update)[:5000]
+            str(update)[:10000]
         )
 
         if not update:
+
             return jsonify({
                 "ok": True
             }), 200
 
-        message = update.get("message")
+        message = update.get(
+            "message"
+        )
 
         if message:
-            handle_telegram_message(message)
+
+            handle_telegram_message(
+                message
+            )
 
         return jsonify({
             "ok": True
         }), 200
 
     except Exception:
+
         logging.exception(
             "Telegram webhook error"
         )
 
-        # Telegram всё равно получает 200,
-        # чтобы не зациклить повторные попытки
         return jsonify({
             "ok": True
         }), 200
 
 
 # =========================================================
-# MAX -> TELEGRAM
+# MAX SENDER NAME
 # =========================================================
 
 def get_max_sender_name(message):
-    sender = message.get("sender")
 
-    if isinstance(sender, dict):
+    sender = message.get(
+        "sender"
+    )
 
-        name = sender.get("name")
+    if not isinstance(
+        sender,
+        dict
+    ):
 
-        if name:
-            return name
+        return "Пользователь MAX"
 
-        first_name = sender.get(
-            "first_name",
-            ""
-        )
+    username = sender.get(
+        "username"
+    )
 
-        last_name = sender.get(
-            "last_name",
-            ""
-        )
+    first_name = sender.get(
+        "first_name",
+        ""
+    )
 
-        full_name = " ".join(
-            x for x in [first_name, last_name]
-            if x
-        ).strip()
+    last_name = sender.get(
+        "last_name",
+        ""
+    )
 
-        if full_name:
-            return full_name
+    name = sender.get(
+        "name"
+    )
+
+    user_id = sender.get(
+        "user_id"
+    )
+
+    # -----------------------------------------------------
+    # Сначала username
+    # -----------------------------------------------------
+
+    if username:
+
+        if str(username).startswith("@"):
+            return str(username)
+
+        return f"@{username}"
+
+    # -----------------------------------------------------
+    # Потом имя
+    # -----------------------------------------------------
+
+    full_name = " ".join(
+        x
+        for x in [
+            first_name,
+            last_name
+        ]
+        if x
+    ).strip()
+
+    if full_name:
+        return full_name
+
+    # -----------------------------------------------------
+    # Старое поле name
+    # -----------------------------------------------------
+
+    if name:
+        return name
+
+    # -----------------------------------------------------
+    # ID
+    # -----------------------------------------------------
+
+    if user_id:
+        return f"MAX ID {user_id}"
 
     return "Пользователь MAX"
 
 
+# =========================================================
+# MAX -> TELEGRAM
+# =========================================================
+
 def handle_max_message(event):
+
     logging.info(
         "MAX message event: %s",
-        str(event)[:10000]
+        str(event)[:15000]
     )
 
-    message = event.get("message", event)
+    message = event.get(
+        "message",
+        event
+    )
 
-    if not isinstance(message, dict):
+    if not isinstance(
+        message,
+        dict
+    ):
         return
 
-    sender_name = get_max_sender_name(message)
+    sender_name = get_max_sender_name(
+        message
+    )
 
-    # -----------------------------
-    # ТЕКСТ
-    # -----------------------------
+    logging.info(
+        "MAX sender: %s",
+        sender_name
+    )
 
-    body = message.get("body")
+    # =====================================================
+    # BODY
+    # =====================================================
 
-    text = None
+    body = message.get(
+        "body"
+    )
 
-    if isinstance(body, dict):
-        text = body.get("text")
+    if not isinstance(
+        body,
+        dict
+    ):
+        body = {}
+
+    # =====================================================
+    # TEXT
+    # =====================================================
+
+    text = body.get(
+        "text"
+    )
 
     if not text:
-        text = message.get("text")
+        text = message.get(
+            "text"
+        )
 
     if text:
+
         telegram_text = (
-            f"💬 {sender_name}:\n{text}"
+            f"👤 {sender_name}\n"
+            f"{text}"
         )
 
         logging.info(
-            "MAX -> Telegram text: %s",
+            "MAX -> Telegram TEXT: %s",
             telegram_text
         )
 
@@ -730,41 +1213,39 @@ def handle_max_message(event):
             telegram_text
         )
 
-    # -----------------------------
-    # ВЛОЖЕНИЯ
-    # -----------------------------
+    # =====================================================
+    # ATTACHMENTS
+    # =====================================================
 
-    attachments = []
-
-    if isinstance(body, dict):
-        attachments = body.get(
-            "attachments",
-            []
-        )
+    attachments = body.get(
+        "attachments",
+        []
+    )
 
     if not attachments:
+
         attachments = message.get(
             "attachments",
             []
         )
 
-    if attachments:
-        logging.info(
-            "MAX attachments: %s",
-            str(attachments)[:10000]
-        )
+    if not isinstance(
+        attachments,
+        list
+    ):
+        attachments = []
 
-    # -----------------------------------------------------
-    # ВАЖНО:
-    # Сейчас для MAX -> Telegram мы сначала проверяем
-    # наличие прямых URL в attachment.
-    # Это позволяет обработать вложения, если MAX
-    # присылает URL непосредственно в webhook.
-    # -----------------------------------------------------
+    logging.info(
+        "MAX attachments count: %s",
+        len(attachments)
+    )
 
     for attachment in attachments:
 
-        if not isinstance(attachment, dict):
+        if not isinstance(
+            attachment,
+            dict
+        ):
             continue
 
         attachment_type = attachment.get(
@@ -776,10 +1257,22 @@ def handle_max_message(event):
             {}
         )
 
-        if not isinstance(payload, dict):
+        if not isinstance(
+            payload,
+            dict
+        ):
             payload = {}
 
-        # Возможные места URL
+        logging.info(
+            "MAX attachment type=%s payload=%s",
+            attachment_type,
+            str(payload)[:5000]
+        )
+
+        # -------------------------------------------------
+        # URL
+        # -------------------------------------------------
+
         attachment_url = (
             payload.get("url")
             or attachment.get("url")
@@ -787,46 +1280,66 @@ def handle_max_message(event):
             or attachment.get("download_url")
         )
 
-        # -----------------------------
+        # -------------------------------------------------
         # IMAGE
-        # -----------------------------
+        # -------------------------------------------------
 
         if attachment_type == "image":
 
             if attachment_url:
+
                 try:
+
                     response = requests.get(
                         attachment_url,
                         timeout=60
+                    )
+
+                    logging.info(
+                        "MAX image download -> %s",
+                        response.status_code
                     )
 
                     if response.ok:
 
                         send_telegram_photo(
                             response.content,
-                            "image.jpg"
+                            "image.jpg",
+                            caption=(
+                                f"👤 {sender_name}"
+                            )
                         )
 
                 except Exception:
+
                     logging.exception(
                         "MAX image download error"
                     )
+
             else:
-                logging.info(
+
+                logging.warning(
                     "MAX image has no direct URL"
                 )
 
-        # -----------------------------
+        # -------------------------------------------------
         # AUDIO
-        # -----------------------------
+        # -------------------------------------------------
 
         elif attachment_type == "audio":
 
             if attachment_url:
+
                 try:
+
                     response = requests.get(
                         attachment_url,
                         timeout=60
+                    )
+
+                    logging.info(
+                        "MAX audio download -> %s",
+                        response.status_code
                     )
 
                     if response.ok:
@@ -836,34 +1349,56 @@ def handle_max_message(event):
                             "voice.ogg"
                         )
 
+                        send_telegram_text(
+                            f"👤 {sender_name}"
+                        )
+
                 except Exception:
+
                     logging.exception(
                         "MAX audio download error"
                     )
+
             else:
-                logging.info(
+
+                logging.warning(
                     "MAX audio has no direct URL"
                 )
 
-        # -----------------------------
+        # -------------------------------------------------
         # FILE
-        # -----------------------------
+        # -------------------------------------------------
 
         elif attachment_type == "file":
 
             if attachment_url:
+
                 try:
+
                     response = requests.get(
                         attachment_url,
                         timeout=60
                     )
 
+                    logging.info(
+                        "MAX file download -> %s",
+                        response.status_code
+                    )
+
                     if response.ok:
 
                         filename = (
-                            payload.get("filename")
-                            or payload.get("name")
+                            payload.get(
+                                "filename"
+                            )
+                            or payload.get(
+                                "name"
+                            )
                             or "file"
+                        )
+
+                        send_telegram_text(
+                            f"📎 {sender_name} отправил(а) файл:"
                         )
 
                         send_telegram_document(
@@ -872,19 +1407,72 @@ def handle_max_message(event):
                         )
 
                 except Exception:
+
                     logging.exception(
                         "MAX file download error"
                     )
 
+            else:
+
+                logging.warning(
+                    "MAX file has no direct URL"
+                )
+
+        # -------------------------------------------------
+        # VIDEO
+        # -------------------------------------------------
+
+        elif attachment_type == "video":
+
+            if attachment_url:
+
+                try:
+
+                    response = requests.get(
+                        attachment_url,
+                        timeout=120
+                    )
+
+                    logging.info(
+                        "MAX video download -> %s",
+                        response.status_code
+                    )
+
+                    if response.ok:
+
+                        # Telegram можно отправлять видео
+                        # через sendVideo.
+                        send_telegram_video(
+                            response.content,
+                            "video.mp4",
+                            caption=(
+                                f"👤 {sender_name}"
+                            )
+                        )
+
+                except Exception:
+
+                    logging.exception(
+                        "MAX video download error"
+                    )
+
+            else:
+
+                logging.warning(
+                    "MAX video has no direct URL"
+                )
+
 
 # =========================================================
-# TELEGRAM DOCUMENT
+# TELEGRAM SEND VIDEO
 # =========================================================
 
-def send_telegram_document(
-    file_bytes,
-    filename="file"
+def send_telegram_video(
+    video_bytes,
+    filename="video.mp4",
+    caption=None
 ):
+
     if not TELEGRAM_CHAT_ID:
         logging.error(
             "TELEGRAM_CHAT_ID is not configured"
@@ -892,17 +1480,23 @@ def send_telegram_document(
         return False
 
     files = {
-        "document": (
+        "video": (
             filename,
-            file_bytes
+            video_bytes,
+            "video/mp4"
         )
     }
 
+    data = {
+        "chat_id": TELEGRAM_CHAT_ID
+    }
+
+    if caption:
+        data["caption"] = caption
+
     result = telegram_api(
-        "sendDocument",
-        data={
-            "chat_id": TELEGRAM_CHAT_ID
-        },
+        "sendVideo",
+        data=data,
         files=files
     )
 
@@ -915,14 +1509,22 @@ def send_telegram_document(
 # MAX WEBHOOK
 # =========================================================
 
-@app.route("/max/webhook", methods=["POST"])
+@app.route(
+    "/max/webhook",
+    methods=["POST"]
+)
 def max_webhook():
 
-    logging.info("===== MAX WEBHOOK =====")
+    logging.info(
+        "===== MAX WEBHOOK ====="
+    )
 
     try:
 
-        # Проверка секрета
+        # -------------------------------------------------
+        # Проверяем секрет
+        # -------------------------------------------------
+
         if MAX_WEBHOOK_SECRET:
 
             received_secret = request.headers.get(
@@ -940,24 +1542,32 @@ def max_webhook():
                     "error": "forbidden"
                 }), 403
 
+        # -------------------------------------------------
+        # Получаем event
+        # -------------------------------------------------
+
         event = request.get_json(
             silent=True
         )
 
         logging.info(
             "MAX event: %s",
-            str(event)[:10000]
+            str(event)[:15000]
         )
 
         if not event:
+
             return jsonify({
                 "ok": True
             }), 200
 
-        event_type = event.get(
-            "update_type"
-        ) or event.get(
-            "type"
+        event_type = (
+            event.get(
+                "update_type"
+            )
+            or event.get(
+                "type"
+            )
         )
 
         logging.info(
@@ -965,19 +1575,25 @@ def max_webhook():
             event_type
         )
 
-        # Сообщение
+        # -------------------------------------------------
+        # MESSAGE
+        # -------------------------------------------------
+
         if event_type in (
             "message_created",
             "message"
         ):
 
-            handle_max_message(event)
+            handle_max_message(
+                event
+            )
 
         return jsonify({
             "ok": True
         }), 200
 
     except Exception:
+
         logging.exception(
             "MAX webhook error"
         )
@@ -988,7 +1604,7 @@ def max_webhook():
 
 
 # =========================================================
-# START
+# START SERVER
 # =========================================================
 
 if __name__ == "__main__":
