@@ -12,7 +12,6 @@ MAX_TOKEN = os.getenv("MAX_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 MAX_CHAT_ID = os.getenv("MAX_CHAT_ID") or "-78865734747587"
 MAX_WEBHOOK_SECRET = os.getenv("MAX_WEBHOOK_SECRET")
-
 MAX_CA_BUNDLE = "/etc/secrets/max_ca_bundle.pem"
 
 
@@ -40,7 +39,8 @@ def get_telegram_sender_name(message):
         return "@" + username
 
     name = " ".join(
-        x for x in [first_name, last_name] if x
+        x for x in [first_name, last_name]
+        if x
     )
 
     if name:
@@ -65,7 +65,8 @@ def get_max_sender_name(sender):
         return name
 
     full_name = " ".join(
-        x for x in [first_name, last_name] if x
+        x for x in [first_name, last_name]
+        if x
     )
 
     if full_name:
@@ -92,7 +93,11 @@ def send_text_to_max(text, sender_name):
     )
 
     payload = {
-        "text": "Telegram -> MAX\n👤 " + sender_name + "\n" + text
+        "text": (
+            "Telegram -> MAX\n"
+            "👤 " + sender_name + "\n"
+            + text
+        )
     }
 
     try:
@@ -127,15 +132,33 @@ def get_max_photo_token(data):
                 token = photo_data.get("token")
 
                 if token:
-                    logging.info(
-                        "MAX PHOTO TOKEN FOUND"
-                    )
+                    logging.info("MAX PHOTO TOKEN FOUND")
                     return token
 
     token = data.get("token")
 
     if token:
         return token
+
+    return None
+
+
+def get_upload_token(data):
+    if not isinstance(data, dict):
+        return None
+
+    token = data.get("token")
+
+    if token:
+        return token
+
+    audio = data.get("audio")
+
+    if isinstance(audio, dict):
+        token = audio.get("token")
+
+        if token:
+            return token
 
     return None
 
@@ -147,7 +170,9 @@ def send_photo_to_max(
     sender_name
 ):
     if not MAX_TOKEN or not MAX_CHAT_ID:
-        logging.error("MAX PHOTO NOT SENT: missing credentials")
+        logging.error(
+            "MAX PHOTO NOT SENT: missing credentials"
+        )
         return
 
     logging.info(
@@ -181,15 +206,26 @@ def send_photo_to_max(
         )
 
         if not init_response.ok:
-            logging.error("MAX PHOTO INIT FAILED")
+            logging.error(
+                "MAX PHOTO INIT FAILED"
+            )
             return
 
-        init_data = init_response.json()
+        try:
+            init_data = init_response.json()
+        except Exception:
+            logging.error(
+                "MAX PHOTO INIT RESPONSE IS NOT JSON: %s",
+                init_response.text
+            )
+            return
 
         upload_url_2 = init_data.get("url")
 
         if not upload_url_2:
-            logging.error("MAX PHOTO UPLOAD URL NOT FOUND")
+            logging.error(
+                "MAX PHOTO UPLOAD URL NOT FOUND"
+            )
             return
 
         files = {
@@ -217,17 +253,27 @@ def send_photo_to_max(
         )
 
         if not upload_response.ok:
-            logging.error("MAX PHOTO UPLOAD FAILED")
+            logging.error(
+                "MAX PHOTO UPLOAD FAILED"
+            )
             return
 
-        upload_data = upload_response.json()
+        try:
+            upload_data = upload_response.json()
+        except Exception:
+            logging.error(
+                "MAX PHOTO UPLOAD RESPONSE IS NOT JSON: %s",
+                upload_response.text
+            )
+            return
 
-        token = get_max_photo_token(
-            upload_data
-        )
+        token = get_max_photo_token(upload_data)
 
         if not token:
-            logging.error("MAX PHOTO TOKEN NOT FOUND")
+            logging.error(
+                "MAX PHOTO TOKEN NOT FOUND: %s",
+                upload_data
+            )
             return
 
         message_url = (
@@ -274,7 +320,9 @@ def send_photo_to_max(
         )
 
     except Exception:
-        logging.exception("MAX PHOTO ERROR")
+        logging.exception(
+            "MAX PHOTO ERROR"
+        )
 
 
 def send_audio_to_max(
@@ -283,12 +331,19 @@ def send_audio_to_max(
     sender_name
 ):
     if not MAX_TOKEN or not MAX_CHAT_ID:
-        logging.error("MAX AUDIO NOT SENT: missing credentials")
+        logging.error(
+            "MAX AUDIO NOT SENT: missing credentials"
+        )
         return
 
     logging.info(
         "STARTING MAX AUDIO UPLOAD: %s bytes",
         len(file_bytes)
+    )
+
+    logging.info(
+        "TELEGRAM AUDIO CONTENT TYPE: %s",
+        content_type
     )
 
     upload_url = (
@@ -317,16 +372,34 @@ def send_audio_to_max(
         )
 
         if not init_response.ok:
-            logging.error("MAX AUDIO INIT FAILED")
+            logging.error(
+                "MAX AUDIO INIT FAILED: status=%s body=%s",
+                init_response.status_code,
+                init_response.text
+            )
             return
 
-        init_data = init_response.json()
+        try:
+            init_data = init_response.json()
+        except Exception:
+            logging.error(
+                "MAX AUDIO INIT RESPONSE IS NOT JSON: %s",
+                init_response.text
+            )
+            return
 
         upload_url_2 = init_data.get("url")
 
         if not upload_url_2:
-            logging.error("MAX AUDIO UPLOAD URL NOT FOUND")
+            logging.error(
+                "MAX AUDIO UPLOAD URL NOT FOUND: %s",
+                init_data
+            )
             return
+
+        logging.info(
+            "MAX AUDIO UPLOAD URL RECEIVED"
+        )
 
         files = {
             "data": (
@@ -353,16 +426,49 @@ def send_audio_to_max(
         )
 
         if not upload_response.ok:
-            logging.error("MAX AUDIO UPLOAD FAILED")
+            logging.error(
+                "MAX AUDIO UPLOAD FAILED: status=%s body=%s",
+                upload_response.status_code,
+                upload_response.text
+            )
             return
 
-        upload_data = upload_response.json()
+        try:
+            upload_data = upload_response.json()
+        except Exception:
+            logging.error(
+                "MAX AUDIO UPLOAD RESPONSE IS NOT JSON."
+            )
 
-        token = upload_data.get("token")
+            logging.error(
+                "MAX AUDIO RAW RESPONSE: %s",
+                upload_response.text
+            )
+
+            logging.error(
+                "MAX AUDIO RESPONSE HEADERS: %s",
+                dict(upload_response.headers)
+            )
+
+            return
+
+        logging.info(
+            "MAX AUDIO PARSED RESPONSE: %s",
+            upload_data
+        )
+
+        token = get_upload_token(upload_data)
 
         if not token:
-            logging.error("MAX AUDIO TOKEN NOT FOUND")
+            logging.error(
+                "MAX AUDIO TOKEN NOT FOUND: %s",
+                upload_data
+            )
             return
+
+        logging.info(
+            "MAX AUDIO TOKEN FOUND"
+        )
 
         message_url = (
             "https://platform-api2.max.ru/messages"
@@ -403,12 +509,16 @@ def send_audio_to_max(
         )
 
     except Exception:
-        logging.exception("MAX AUDIO ERROR")
+        logging.exception(
+            "MAX AUDIO ERROR"
+        )
 
 
 def download_telegram_file(file_id):
     if not TELEGRAM_TOKEN:
-        logging.error("TELEGRAM TOKEN IS MISSING")
+        logging.error(
+            "TELEGRAM TOKEN IS MISSING"
+        )
         return None, None
 
     get_file_url = (
@@ -420,7 +530,9 @@ def download_telegram_file(file_id):
     try:
         response = requests.get(
             get_file_url,
-            params={"file_id": file_id},
+            params={
+                "file_id": file_id
+            },
             timeout=30
         )
 
@@ -435,12 +547,15 @@ def download_telegram_file(file_id):
         data = response.json()
 
         file_path = (
-            data.get("result", {})
+            data
+            .get("result", {})
             .get("file_path")
         )
 
         if not file_path:
-            logging.error("TELEGRAM FILE PATH NOT FOUND")
+            logging.error(
+                "TELEGRAM FILE PATH NOT FOUND"
+            )
             return None, None
 
         download_url = (
@@ -461,6 +576,10 @@ def download_telegram_file(file_id):
         )
 
         if not file_response.ok:
+            logging.error(
+                "TELEGRAM FILE DOWNLOAD FAILED: %s",
+                file_response.text
+            )
             return None, None
 
         content_type = file_response.headers.get(
@@ -468,13 +587,25 @@ def download_telegram_file(file_id):
             "application/octet-stream"
         )
 
-        return file_response.content, content_type
+        logging.info(
+            "TELEGRAM FILE CONTENT TYPE: %s",
+            content_type
+        )
+
+        logging.info(
+            "TELEGRAM FILE SIZE: %s bytes",
+            len(file_response.content)
+        )
+
+        return (
+            file_response.content,
+            content_type
+        )
 
     except Exception:
         logging.exception(
             "TELEGRAM FILE DOWNLOAD ERROR"
         )
-
         return None, None
 
 
@@ -504,8 +635,6 @@ def telegram_webhook():
         message
     )
 
-    # TEXT
-
     text = message.get("text")
 
     if text:
@@ -514,13 +643,14 @@ def telegram_webhook():
             sender_name
         )
 
-    # PHOTO
-
     photos = message.get("photo")
 
     if isinstance(photos, list) and photos:
         photo = photos[-1]
-        file_id = photo.get("file_id")
+
+        file_id = photo.get(
+            "file_id"
+        )
 
         logging.info(
             "TELEGRAM PHOTO FILE ID: %s",
@@ -538,16 +668,19 @@ def telegram_webhook():
                 send_photo_to_max(
                     file_bytes,
                     content_type,
-                    message.get("caption", ""),
+                    message.get(
+                        "caption",
+                        ""
+                    ),
                     sender_name
                 )
-
-    # VOICE
 
     voice = message.get("voice")
 
     if isinstance(voice, dict):
-        file_id = voice.get("file_id")
+        file_id = voice.get(
+            "file_id"
+        )
 
         logging.info(
             "TELEGRAM VOICE FILE ID: %s",
@@ -628,9 +761,11 @@ def max_webhook():
 
     text = body.get("text")
 
-    # TEXT MAX -> TELEGRAM
-
-    if text and TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
+    if (
+        text
+        and TELEGRAM_TOKEN
+        and TELEGRAM_CHAT_ID
+    ):
         telegram_url = (
             "https://api.telegram.org/bot"
             + TELEGRAM_TOKEN
@@ -663,18 +798,18 @@ def max_webhook():
                 "MAX TEXT TO TELEGRAM ERROR"
             )
 
-    # ATTACHMENTS MAX -> TELEGRAM
-
     attachments = body.get(
         "attachments",
         []
     )
 
-    if not isinstance(attachments, list):
+    if not isinstance(
+        attachments,
+        list
+    ):
         attachments = []
 
     for attachment in attachments:
-
         if not isinstance(
             attachment,
             dict
@@ -690,14 +825,15 @@ def max_webhook():
             {}
         )
 
-        if not isinstance(payload, dict):
+        if not isinstance(
+            payload,
+            dict
+        ):
             payload = {}
 
         media_url = payload.get(
             "url"
         )
-
-        # PHOTO
 
         if (
             attachment_type == "image"
@@ -758,8 +894,6 @@ def max_webhook():
                 logging.exception(
                     "MAX PHOTO TO TELEGRAM ERROR"
                 )
-
-        # AUDIO
 
         if (
             attachment_type == "audio"
@@ -834,10 +968,16 @@ def setup_max():
             "error": "MAX_TOKEN is not set"
         }), 500
 
-    url = "https://platform-api2.max.ru/subscriptions"
+    url = (
+        "https://platform-api2.max.ru/"
+        "subscriptions"
+    )
 
     payload = {
-        "url": "https://telegram-max-bridge.onrender.com/max/webhook",
+        "url": (
+            "https://telegram-max-bridge.onrender.com/"
+            "max/webhook"
+        ),
         "update_types": [
             "message_created",
             "bot_added",
@@ -893,4 +1033,4 @@ if __name__ == "__main__":
     app.run(
         host="0.0.0.0",
         port=port
-    )
+                    )
