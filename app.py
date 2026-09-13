@@ -62,7 +62,10 @@ def setup_max():
             verify=MAX_CA_BUNDLE
         )
 
-        logging.info("MAX SUBSCRIPTION RESPONSE: %s", response.text)
+        logging.info(
+            "MAX SUBSCRIPTION RESPONSE: %s",
+            response.text
+        )
 
         return jsonify({
             "ok": response.ok,
@@ -81,19 +84,7 @@ def setup_max():
         }), 500
 
 
-@app.route("/telegram/webhook", methods=["POST"])
-def telegram_webhook():
-    data = request.get_json(silent=True) or {}
-
-    logging.info("TELEGRAM UPDATE: %s", data)
-
-    message = data.get("message", {})
-
-    if not isinstance(message, dict):
-        message = {}
-
-    text = message.get("text")
-
+def get_telegram_sender_name(message):
     sender = message.get("from", {})
 
     if not isinstance(sender, dict):
@@ -104,55 +95,325 @@ def telegram_webhook():
     last_name = sender.get("last_name", "")
 
     if username:
-        sender_name = "@" + username
-    else:
-        sender_name = " ".join(
-            part for part in [first_name, last_name] if part
+        return "@" + username
+
+    sender_name = " ".join(
+        part for part in [first_name, last_name] if part
+    )
+
+    if sender_name:
+        return sender_name
+
+    return "Пользователь"
+
+
+def send_text_to_max(text, sender_name):
+    if not MAX_TOKEN or not MAX_CHAT_ID:
+        logging.warning(
+            "MAX MESSAGE NOT SENT: MAX_TOKEN or MAX_CHAT_ID is missing"
+        )
+        return
+
+    url = (
+        f"https://platform-api2.max.ru/messages"
+        f"?chat_id={int(MAX_CHAT_ID)}"
+    )
+
+    headers = {
+        "Authorization": MAX_TOKEN,
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "text": (
+            "Telegram → MAX\n"
+            f"👤 {sender_name}\n"
+            f"{text}"
+        )
+    }
+
+    try:
+        response = requests.post(
+            url,
+            headers=headers,
+            json=payload,
+            timeout=20,
+            verify=MAX_CA_BUNDLE
         )
 
-    if not sender_name:
-        sender_name = "Пользователь"
+        logging.info(
+            "MAX TEXT RESPONSE: %s",
+            response.text
+        )
 
-    if text and MAX_TOKEN and MAX_CHAT_ID:
+    except requests.exceptions.RequestException:
+        logging.exception("MAX TEXT MESSAGE ERROR")
 
-        url = (
+
+def send_photo_to_max(photo_file, caption, sender_name):
+    if not MAX_TOKEN or not MAX_CHAT_ID:
+        logging.warning(
+            "MAX PHOTO NOT SENT: MAX_TOKEN or MAX_CHAT_ID is missing"
+        )
+        return
+
+    upload_info_url = (
+        "https://platform-api2.max.ru/uploads"
+        "?type=image"
+    )
+
+    headers = {
+        "Authorization": MAX_TOKEN
+    }
+
+    try:
+        upload_response = requests.post(
+            upload_info_url,
+            headers=headers,
+            timeout=20,
+            verify=MAX_CA_BUNDLE
+        )
+
+        logging.info(
+            "MAX UPLOAD INIT RESPONSE: %s",
+            upload_response.text
+        )
+
+        if not upload_response.ok:
+            logging.error(
+                "MAX UPLOAD INIT FAILED: %s",
+                upload_response.text
+            )
+            return
+
+        upload_data = upload_response.json()
+
+        upload_url = upload_data.get("url")
+
+        if not upload_url:
+            logging.error(
+                "MAX UPLOAD URL NOT FOUND: %s",
+                upload_data
+            )
+            return
+
+        file_bytes = photo_file.get("file_bytes")
+        file_name = photo_file.get(
+            "file_name",
+            "photo.jpg"
+        )
+
+        upload_files = {
+            "data": (
+                file_name,
+                file_bytes,
+                photo_file.get(
+                    "content_type",
+                    "image/jpeg"
+                )
+            )
+        }
+
+        upload_result = requests.post(
+            upload_url,
+            files=upload_files,
+            timeout=60
+        )
+
+        logging.info(
+            "MAX PHOTO UPLOAD RESPONSE: %s",
+            upload_result.text
+        )
+
+        if not upload_result.ok:
+            logging.error(
+                "MAX PHOTO UPLOAD FAILED: %s",
+                upload_result.text
+            )
+            return
+
+        upload_result_data = upload_result.json()
+
+        token = upload_result_data.get("token")
+
+        if not token:
+            token = upload_data.get("token")
+
+        if not token:
+            logging.error(
+                "MAX PHOTO TOKEN NOT FOUND: %s",
+                upload_result_data
+            )
+            return
+
+        text = (
+            "Telegram → MAX\n"
+            f"👤 {sender_name}"
+        )
+
+        if caption:
+            text += f"\n{caption}"
+
+        message_url = (
             f"https://platform-api2.max.ru/messages"
             f"?chat_id={int(MAX_CHAT_ID)}"
         )
 
-        headers = {
+        message_headers = {
             "Authorization": MAX_TOKEN,
             "Content-Type": "application/json"
         }
 
-        payload = {
-            "text": (
-                "Telegram → MAX\n"
-                f"👤 {sender_name}\n"
-                f"{text}"
-            )
+        message_payload = {
+            "text": text,
+            "attachments": [
+                {
+                    "type": "image",
+                    "payload": {
+                        "token": token
+                    }
+                }
+            ]
         }
 
-        try:
-            response = requests.post(
-                url,
-                headers=headers,
-                json=payload,
-                timeout=20,
-                verify=MAX_CA_BUNDLE
-            )
-
-            logging.info("MAX RESPONSE: %s", response.text)
-
-        except requests.exceptions.RequestException:
-            logging.exception("MAX MESSAGE ERROR")
-
-    else:
-        logging.warning(
-            "MAX MESSAGE NOT SENT: MAX_TOKEN or MAX_CHAT_ID is missing"
+        message_response = requests.post(
+            message_url,
+            headers=message_headers,
+            json=message_payload,
+            timeout=30,
+            verify=MAX_CA_BUNDLE
         )
 
-    return jsonify({"ok": True})
+        logging.info(
+            "MAX PHOTO MESSAGE RESPONSE: %s",
+            message_response.text
+        )
+
+        if not message_response.ok:
+            logging.error(
+                "MAX PHOTO MESSAGE FAILED: %s",
+                message_response.text
+            )
+
+    except Exception:
+        logging.exception(
+            "MAX PHOTO ERROR"
+        )
+
+
+@app.route("/telegram/webhook", methods=["POST"])
+def telegram_webhook():
+    data = request.get_json(silent=True) or {}
+
+    logging.info(
+        "TELEGRAM UPDATE: %s",
+        data
+    )
+
+    message = data.get("message", {})
+
+    if not isinstance(message, dict):
+        message = {}
+
+    sender_name = get_telegram_sender_name(message)
+
+    text = message.get("text")
+
+    if text:
+        send_text_to_max(
+            text,
+            sender_name
+        )
+
+    photos = message.get("photo")
+
+    if isinstance(photos, list) and photos:
+
+        biggest_photo = photos[-1]
+
+        file_id = biggest_photo.get("file_id")
+
+        if file_id and TELEGRAM_TOKEN:
+
+            try:
+                file_info_url = (
+                    f"https://api.telegram.org/"
+                    f"bot{TELEGRAM_TOKEN}/getFile"
+                )
+
+                file_info_response = requests.get(
+                    file_info_url,
+                    params={
+                        "file_id": file_id
+                    },
+                    timeout=20
+                )
+
+                logging.info(
+                    "TELEGRAM FILE INFO: %s",
+                    file_info_response.text
+                )
+
+                if file_info_response.ok:
+
+                    file_info = file_info_response.json()
+
+                    file_path = (
+                        file_info
+                        .get("result", {})
+                        .get("file_path")
+                    )
+
+                    if file_path:
+
+                        download_url = (
+                            f"https://api.telegram.org/"
+                            f"file/bot{TELEGRAM_TOKEN}/"
+                            f"{file_path}"
+                        )
+
+                        photo_response = requests.get(
+                            download_url,
+                            timeout=60
+                        )
+
+                        if photo_response.ok:
+
+                            photo_file = {
+                                "file_bytes": photo_response.content,
+                                "file_name": "telegram_photo.jpg",
+                                "content_type": photo_response.headers.get(
+                                    "Content-Type",
+                                    "image/jpeg"
+                                )
+                            }
+
+                            caption = message.get(
+                                "caption",
+                                ""
+                            )
+
+                            send_photo_to_max(
+                                photo_file,
+                                caption,
+                                sender_name
+                            )
+
+                        else:
+
+                            logging.error(
+                                "TELEGRAM PHOTO DOWNLOAD FAILED: %s",
+                                photo_response.text
+                            )
+
+            except requests.exceptions.RequestException:
+                logging.exception(
+                    "TELEGRAM PHOTO ERROR"
+                )
+
+    return jsonify({
+        "ok": True
+    })
 
 
 @app.route("/max/webhook", methods=["POST"])
@@ -166,7 +427,9 @@ def max_webhook():
 
         if received_secret != MAX_WEBHOOK_SECRET:
 
-            logging.warning("Invalid MAX webhook secret")
+            logging.warning(
+                "Invalid MAX webhook secret"
+            )
 
             return jsonify({
                 "ok": False
@@ -174,7 +437,10 @@ def max_webhook():
 
     data = request.get_json(silent=True) or {}
 
-    logging.info("MAX UPDATE: %s", data)
+    logging.info(
+        "MAX UPDATE: %s",
+        data
+    )
 
     update_type = data.get("update_type")
 
@@ -263,26 +529,11 @@ def max_webhook():
                 "TELEGRAM MESSAGE ERROR"
             )
 
-    else:
-
-        logging.warning(
-            "TELEGRAM MESSAGE NOT SENT: "
-            "TELEGRAM_TOKEN or TELEGRAM_CHAT_ID is missing"
-        )
-
-    return jsonify({"ok": True})
+    return jsonify({
+        "ok": True
+    })
 
 
 if __name__ == "__main__":
 
     port = int(
-        os.environ.get(
-            "PORT",
-            10000
-        )
-    )
-
-    app.run(
-        host="0.0.0.0",
-        port=port
-    )
