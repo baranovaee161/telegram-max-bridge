@@ -1,3 +1,4 @@
+```python
 import os
 import logging
 import requests
@@ -101,7 +102,11 @@ def telegram_webhook():
 
     if text and MAX_TOKEN and MAX_CHAT_ID:
 
-        url = "https://platform-api2.max.ru/messages"
+        # MAX требует chat_id как параметр запроса
+        url = (
+            f"https://platform-api2.max.ru/messages"
+            f"?chat_id={int(MAX_CHAT_ID)}"
+        )
 
         headers = {
             "Authorization": MAX_TOKEN,
@@ -109,7 +114,6 @@ def telegram_webhook():
         }
 
         payload = {
-            "chat_id": int(MAX_CHAT_ID),
             "text": "Telegram → " + text
         }
 
@@ -131,6 +135,12 @@ def telegram_webhook():
         except requests.exceptions.RequestException:
 
             logging.exception("MAX MESSAGE ERROR")
+
+    else:
+
+        logging.warning(
+            "MAX MESSAGE NOT SENT: MAX_TOKEN or MAX_CHAT_ID is missing"
+        )
 
     return jsonify({"ok": True})
 
@@ -190,47 +200,5 @@ def max_webhook():
 
     # Если сообщение пришло из MAX —
     # отправляем его в Telegram
-    if text and TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
-
-        url = (
-            f"https://api.telegram.org/"
-            f"bot{TELEGRAM_TOKEN}/sendMessage"
-        )
-
-        payload = {
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": "MAX → " + text
-        }
-
-        try:
-
-            response = requests.post(
-                url,
-                json=payload,
-                timeout=20
-            )
-
-            logging.info(
-                "TELEGRAM RESPONSE: %s",
-                response.text
-            )
-
-        except requests.exceptions.RequestException:
-
-            logging.exception(
-                "TELEGRAM MESSAGE ERROR"
-            )
-
-    return jsonify({"ok": True})
-
-
-if __name__ == "__main__":
-
-    port = int(
-        os.environ.get("PORT", 10000)
-    )
-
-    app.run(
-        host="0.0.0.0",
-        port=port
-    )
+    if text and TELEGRAM
+```
