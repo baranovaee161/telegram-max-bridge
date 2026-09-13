@@ -1,4 +1,3 @@
-```python
 import os
 import logging
 import requests
@@ -16,7 +15,6 @@ MAX_CHAT_ID = os.getenv("MAX_CHAT_ID")
 
 MAX_WEBHOOK_SECRET = os.getenv("MAX_WEBHOOK_SECRET")
 
-# Сертификаты Минцифры для подключения к MAX API
 MAX_CA_BUNDLE = "/etc/secrets/max_ca_bundle.pem"
 
 
@@ -30,7 +28,6 @@ def health():
     return jsonify({"status": "ok"})
 
 
-# Подключение MAX Webhook
 @app.route("/setup-max")
 def setup_max():
 
@@ -89,7 +86,6 @@ def setup_max():
         }), 500
 
 
-# Получаем сообщения из Telegram
 @app.route("/telegram/webhook", methods=["POST"])
 def telegram_webhook():
 
@@ -102,7 +98,6 @@ def telegram_webhook():
 
     if text and MAX_TOKEN and MAX_CHAT_ID:
 
-        # MAX требует chat_id как параметр запроса
         url = (
             f"https://platform-api2.max.ru/messages"
             f"?chat_id={int(MAX_CHAT_ID)}"
@@ -118,7 +113,6 @@ def telegram_webhook():
         }
 
         try:
-
             response = requests.post(
                 url,
                 headers=headers,
@@ -145,11 +139,9 @@ def telegram_webhook():
     return jsonify({"ok": True})
 
 
-# Получаем сообщения из MAX
 @app.route("/max/webhook", methods=["POST"])
 def max_webhook():
 
-    # Проверяем секрет MAX
     if MAX_WEBHOOK_SECRET:
 
         received_secret = request.headers.get(
@@ -175,7 +167,6 @@ def max_webhook():
 
     update_type = data.get("update_type")
 
-    # Получаем ID MAX-чата
     if update_type == "bot_added":
 
         chat_id = data.get("chat_id")
@@ -185,7 +176,6 @@ def max_webhook():
             chat_id
         )
 
-    # Получаем новое сообщение
     message = data.get("message", {})
 
     if not isinstance(message, dict):
@@ -198,7 +188,53 @@ def max_webhook():
 
     text = body.get("text")
 
-    # Если сообщение пришло из MAX —
-    # отправляем его в Telegram
-    if text and TELEGRAM
-```
+    if text and TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
+
+        url = (
+            f"https://api.telegram.org/"
+            f"bot{TELEGRAM_TOKEN}/sendMessage"
+        )
+
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": "MAX → " + text
+        }
+
+        try:
+
+            response = requests.post(
+                url,
+                json=payload,
+                timeout=20
+            )
+
+            logging.info(
+                "TELEGRAM RESPONSE: %s",
+                response.text
+            )
+
+        except requests.exceptions.RequestException:
+
+            logging.exception(
+                "TELEGRAM MESSAGE ERROR"
+            )
+
+    else:
+
+        logging.warning(
+            "TELEGRAM MESSAGE NOT SENT: TELEGRAM_TOKEN or TELEGRAM_CHAT_ID is missing"
+        )
+
+    return jsonify({"ok": True})
+
+
+if __name__ == "__main__":
+
+    port = int(
+        os.environ.get("PORT", 10000)
+    )
+
+    app.run(
+        host="0.0.0.0",
+        port=port
+    )
