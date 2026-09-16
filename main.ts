@@ -9,8 +9,6 @@ const PUBLIC_URL =
 
 const CHAT_LINK = "https://t.me/dmdznakomstva";
 
-// Временное хранение анкет в памяти.
-// KV специально НЕ используем.
 const questionnaires = new Map<number, any>();
 
 async function telegram(method: string, data: unknown = {}) {
@@ -44,7 +42,7 @@ async function maxApi(
   const response = await fetch(url, {
     method: "POST",
     headers: {
-      "Authorization": MAX_TOKEN,
+      Authorization: MAX_TOKEN,
       "Content-Type": "application/json",
     },
     body: JSON.stringify(data),
@@ -65,8 +63,6 @@ async function sendToTelegram(text: string) {
 }
 
 async function sendToMax(text: string) {
-  // На этом этапе мост MAX оставляем рабочим,
-  // но chat_id нужно будет получать из события MAX.
   console.log("MAX message:", text);
 }
 
@@ -109,7 +105,8 @@ async function askNext(userId: number) {
   if (q.step === "name") {
     await telegram("sendMessage", {
       chat_id: userId,
-      text: "1️⃣ Как тебя зовут?\n\nНапиши имя или как к тебе обращаться.",
+      text:
+        "1️⃣ Как тебя зовут?\n\nНапиши имя или как к тебе обращаться.",
     });
     return;
   }
@@ -265,9 +262,12 @@ async function handlePrivateMessage(message: any) {
     await startQuestionnaire(userId);
 
     const q = questionnaires.get(userId);
-    q.step = "name";
 
-    await askNext(userId);
+    if (q) {
+      q.step = "name";
+      await askNext(userId);
+    }
+
     return;
   }
 
@@ -351,7 +351,7 @@ async function handlePrivateMessage(message: any) {
     if (text === "✅ Да, всё верно") {
       q.completed = true;
 
-      const profile =
+      q.profile =
         `🎉 Новый участник в знакомствах ДМД Парк!\n\n` +
         `👤 ${q.name}, ${q.age}\n` +
         `💍 ${q.married}\n` +
@@ -362,8 +362,6 @@ async function handlePrivateMessage(message: any) {
         `💬 Дружба: ${q.friendship}\n` +
         `📝 ${q.about || "О себе ничего не указано"}`;
 
-      q.profile = profile;
-
       await telegram("sendMessage", {
         chat_id: userId,
         text:
@@ -371,4 +369,191 @@ async function handlePrivateMessage(message: any) {
           `Теперь можно присоединиться к чату знакомств ДМД Парк.\n\n` +
           `После входа твоя анкета автоматически появится в чате. 👇\n\n` +
           CHAT_LINK,
-        reply_markup:
+        reply_markup: {
+          remove_keyboard: true,
+        },
+      });
+    }
+  }
+}
+
+async function handleTelegram(update: any) {
+  console.log(
+    "TELEGRAM UPDATE:",
+    JSON.stringify(update),
+  );
+
+  if (update.message?.new_chat_members) {
+    for (const member of update.message.new_chat_members) {
+      const userId = member.id;
+      const q = questionnaires.get(userId);
+
+      if (!q?.completed || !q.profile) {
+        continue;
+      }
+
+      await telegram("sendMessage", {
+        chat_id: update.message.chat.id,
+        text: q.profile,
+      });
+
+      questionnaires.delete(userId);
+    }
+
+    return;
+  }
+
+  const message = update.message;
+
+  if (!message) return;
+
+  const chat = message.chat ?? {};
+
+  if (chat.type === "private") {
+    await handlePrivateMessage(message);
+    return;
+  }
+
+  if (chat.username !== "dmdznakomstva") return;
+
+  const sender = message.from ?? {};
+
+  if (sender.is_bot) return;
+
+  const text = message.text;
+
+  if (!text) return;
+
+  const name =
+    `${sender.first_name ?? ""} ${sender.last_name ?? ""}`.trim() ||
+    "Сосед";
+
+  await sendToMax(
+    `👋 ${name} • Telegram\n\n${text}`,
+  );
+}
+
+async function handleMax(update: any) {
+  console.log(
+    "MAX UPDATE:",
+    JSON.stringify(update),
+  );
+
+  if (update.update_type !== "message_created") {
+    return;
+  }
+
+  const message = update.message ?? {};
+
+  const sender =
+    message.sender ??
+    update.sender ??
+    {};
+
+  if (sender.is_bot) return;
+
+  const text =
+    message.body?.text ??
+    message.text;
+
+  if (!text) return;
+
+  const name =
+    sender.name ||
+    "Сосед";
+
+  await sendToTelegram(
+    `👋 ${name} • MAX\n\n${text}`,
+  );
+}
+
+async function setupWebhooks() {
+  console.log("Настраиваем webhooks...");
+
+  await telegram(
+    "setWebhook",
+    {
+      url: `${PUBLIC_URL}/telegram/webhook`,
+      allowed_updates: [
+        "message",
+      ],
+    },
+  );
+
+  try {
+    const response = await fetch(
+      `${MAX_API}/subscriptions`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: MAX_TOKEN,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          url: `${PUBLIC_URL}/max/webhook`,
+          update_types: [
+            "message_created",
+            "bot_added",
+          ],
+        }),
+      },
+    );
+
+    console.log(
+      "MAX webhook:",
+      response.status,
+      await response.text(),
+    );
+  } catch (error) {
+    console.error(
+      "MAX webhook error:",
+      error,
+    );
+  }
+}
+
+await setupWebhooks();
+
+Deno.serve(async (request) => {
+  if (request.method === "GET") {
+    return new Response(
+      "DMD Park Chat Bridge is running!",
+    );
+  }
+
+  const url = new URL(request.url);
+
+  try {
+    const update = await request.json();
+
+    if (
+      url.pathname ===
+      "/telegram/webhook"
+    ) {
+      await handleTelegram(update);
+    }
+
+    if (
+      url.pathname ===
+      "/max/webhook"
+    ) {
+      await handleMax(update);
+    }
+
+    return Response.json({
+      ok: true,
+    });
+  } catch (error) {
+    console.error(error);
+
+    return Response.json(
+      {
+        ok: false,
+        error: String(error),
+      },
+      {
+        status: 500,
+      },
+    );
+  }
+});
