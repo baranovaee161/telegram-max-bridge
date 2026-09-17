@@ -50,6 +50,47 @@ MAX_API = "https://platform-api2.max.ru"
 
 
 # =========================================================
+# АНКЕТА: ВОПРОСЫ И ХРАНИЛИЩЕ
+# =========================================================
+
+ANKETA_QUESTIONS = [
+    {
+        "id": 1,
+        "key": "name",
+        "text": "👤 Как вас зовут?"
+    },
+    {
+        "id": 2,
+        "key": "age",
+        "text": "🎂 Сколько вам лет?"
+    },
+    {
+        "id": 3,
+        "key": "zodiac",
+        "text": "♓ Какой ваш знак зодиака?"
+    },
+    {
+        "id": 4,
+        "key": "goal",
+        "text": "🎯 Какая ваша цель прихода в этот чат?"
+    },
+    {
+        "id": 5,
+        "key": "children",
+        "text": "👶 Есть ли у вас дети? (Да/Нет)"
+    },
+    {
+        "id": 6,
+        "key": "friendship",
+        "text": "💭 Существует ли дружба между мужчиной и женщиной? (Ваше мнение)"
+    }
+]
+
+# Хранилище пользователей, заполняющих анкету
+users_anketa = {}
+
+
+# =========================================================
 # START LOG
 # =========================================================
 
@@ -118,7 +159,8 @@ def health():
 def telegram_api(
     method,
     data=None,
-    files=None
+    files=None,
+    reply_markup=None
 ):
 
     if not TELEGRAM_TOKEN:
@@ -134,13 +176,20 @@ def telegram_api(
         f"bot{TELEGRAM_TOKEN}/{method}"
     )
 
+    if data is None:
+        data = {}
+
+    if reply_markup:
+        data["reply_markup"] = reply_markup
+
     try:
 
         response = requests.post(
             url,
             data=data,
             files=files,
-            timeout=60
+            timeout=60,
+            json=data if reply_markup else None
         )
 
         logging.info(
@@ -308,6 +357,66 @@ def setup_telegram_webhook():
 
 
 # =========================================================
+# TELEGRAM SEND TEXT WITH BUTTONS
+# =========================================================
+
+def send_telegram_text_with_buttons(
+    chat_id,
+    text,
+    buttons=None
+):
+
+    if not TELEGRAM_TOKEN:
+
+        logging.error(
+            "TELEGRAM_TOKEN is not configured"
+        )
+
+        return False
+
+    url = (
+        f"https://api.telegram.org/"
+        f"bot{TELEGRAM_TOKEN}/sendMessage"
+    )
+
+    data = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML"
+    }
+
+    if buttons:
+        data["reply_markup"] = buttons
+
+    try:
+
+        response = requests.post(
+            url,
+            json=data,
+            timeout=60
+        )
+
+        logging.info(
+            "Telegram sendMessage -> %s",
+            response.status_code
+        )
+
+        if not response.ok:
+
+            return False
+
+        return response.json().get("ok", False)
+
+    except Exception:
+
+        logging.exception(
+            "Telegram sendMessage error"
+        )
+
+        return False
+
+
+# =========================================================
 # TELEGRAM SEND TEXT
 # =========================================================
 
@@ -321,16 +430,10 @@ def send_telegram_text(text):
 
         return False
 
-    result = telegram_api(
-        "sendMessage",
-        data={
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": text
-        }
-    )
-
-    return bool(
-        result and result.get("ok")
+    return send_telegram_text_with_buttons(
+        TELEGRAM_CHAT_ID,
+        text,
+        None
     )
 
 
@@ -1229,7 +1332,177 @@ def telegram_sender_name(message):
 
 
 # =========================================================
-# TELEGRAM -> MAX
+# АНКЕТА: ОТПРАВКА ПЕРВОГО ВОПРОСА
+# =========================================================
+
+def start_anketa(user_id):
+
+    logging.info(
+        "Starting anketa for user %s",
+        user_id
+    )
+
+    users_anketa[user_id] = {
+        "current_question": 0,
+        "data": {}
+    }
+
+    first_question = ANKETA_QUESTIONS[0]["text"]
+
+    send_telegram_text_with_buttons(
+        user_id,
+        f"👋 Добро пожаловать!\n\nДавайте заполним анкету.\n\n{first_question}",
+        None
+    )
+
+
+# =========================================================
+# АНКЕТА: ОБРАБОТКА ОТВЕТА
+# =========================================================
+
+def process_anketa_answer(user_id, answer_text):
+
+    if user_id not in users_anketa:
+        return
+
+    user_state = users_anketa[user_id]
+    current_q_index = user_state["current_question"]
+
+    if current_q_index >= len(ANKETA_QUESTIONS):
+        return
+
+    # Сохраняем ответ
+    question_key = ANKETA_QUESTIONS[current_q_index]["key"]
+    user_state["data"][question_key] = answer_text
+
+    logging.info(
+        "User %s answered Q%s: %s",
+        user_id,
+        current_q_index + 1,
+        answer_text
+    )
+
+    # Переходим к следующему вопросу
+    current_q_index += 1
+    user_state["current_question"] = current_q_index
+
+    if current_q_index < len(ANKETA_QUESTIONS):
+
+        # Есть ещё вопросы
+        next_question = ANKETA_QUESTIONS[current_q_index]["text"]
+
+        send_telegram_text_with_buttons(
+            user_id,
+            next_question,
+            None
+        )
+
+    else:
+
+        # Все вопросы ответены - показываем итог
+        show_anketa_summary(user_id)
+
+
+# =========================================================
+# АНКЕТА: ПОКАЗ ИТОГОВ И ПОДТВЕРЖДЕНИЯ
+# =========================================================
+
+def show_anketa_summary(user_id):
+
+    if user_id not in users_anketa:
+        return
+
+    user_data = users_anketa[user_id]["data"]
+
+    summary = (
+        "✅ <b>Спасибо! Вот ваша анкета:</b>\n\n"
+        f"👤 <b>Имя:</b> {user_data.get('name', 'N/A')}\n"
+        f"🎂 <b>Возраст:</b> {user_data.get('age', 'N/A')}\n"
+        f"♓ <b>Знак зодиака:</b> {user_data.get('zodiac', 'N/A')}\n"
+        f"🎯 <b>Цель:</b> {user_data.get('goal', 'N/A')}\n"
+        f"👶 <b>Дети:</b> {user_data.get('children', 'N/A')}\n"
+        f"💭 <b>Дружба М-Ж:</b> {user_data.get('friendship', 'N/A')}\n\n"
+        "<b>📋 Всё верно?</b>"
+    )
+
+    buttons = {
+        "inline_keyboard": [
+            [
+                {
+                    "text": "✅ Да, всё правильно",
+                    "callback_data": f"anketa_confirm_yes_{user_id}"
+                },
+                {
+                    "text": "❌ Нет, переделать",
+                    "callback_data": f"anketa_confirm_no_{user_id}"
+                }
+            ]
+        ]
+    }
+
+    send_telegram_text_with_buttons(
+        user_id,
+        summary,
+        buttons
+    )
+
+
+# =========================================================
+# АНКЕТА: ОТПРАВКА В ЧАТ
+# =========================================================
+
+def send_anketa_to_telegram_chat(user_id):
+
+    if user_id not in users_anketa:
+        return
+
+    user_data = users_anketa[user_id]["data"]
+
+    anketa_message = (
+        "🆕 <b>Новый участник присоединился!</b>\n\n"
+        f"👤 <b>Имя:</b> {user_data.get('name', 'N/A')}\n"
+        f"🎂 <b>Возраст:</b> {user_data.get('age', 'N/A')}\n"
+        f"♓ <b>Знак зодиака:</b> {user_data.get('zodiac', 'N/A')}\n"
+        f"🎯 <b>Цель прихода:</b> {user_data.get('goal', 'N/A')}\n"
+        f"👶 <b>Дети:</b> {user_data.get('children', 'N/A')}\n"
+        f"💭 <b>О дружбе М-Ж:</b> {user_data.get('friendship', 'N/A')}\n\n"
+        "Добро пожаловать в наше сообщество! 🎉"
+    )
+
+    send_telegram_text_with_buttons(
+        TELEGRAM_CHAT_ID,
+        anketa_message,
+        None
+    )
+
+
+# =========================================================
+# АНКЕТА: ОТПРАВКА В MAX ЧАТ
+# =========================================================
+
+def send_anketa_to_max_chat(user_id):
+
+    if user_id not in users_anketa:
+        return
+
+    user_data = users_anketa[user_id]["data"]
+
+    anketa_text = (
+        "🆕 Новый участник присоединился!\n\n"
+        f"👤 Имя: {user_data.get('name', 'N/A')}\n"
+        f"🎂 Возраст: {user_data.get('age', 'N/A')}\n"
+        f"♓ Знак зодиака: {user_data.get('zodiac', 'N/A')}\n"
+        f"🎯 Цель прихода: {user_data.get('goal', 'N/A')}\n"
+        f"👶 Дети: {user_data.get('children', 'N/A')}\n"
+        f"💭 О дружбе М-Ж: {user_data.get('friendship', 'N/A')}\n\n"
+        "Добро пожаловать в наше сообщество! 🎉"
+    )
+
+    send_max_text(anketa_text)
+
+
+# =========================================================
+# TELEGRAM -> MAX (обычные сообщения)
 # =========================================================
 
 def handle_telegram_message(message):
@@ -1240,6 +1513,19 @@ def handle_telegram_message(message):
     ):
 
         return
+
+    user_id = message.get("from", {}).get("id")
+
+    # Проверяем, не заполняет ли пользователь анкету
+    if user_id in users_anketa:
+
+        text = message.get("text")
+
+        if text and not text.startswith("/"):
+
+            process_anketa_answer(user_id, text)
+
+            return
 
     sender_name = telegram_sender_name(
         message
@@ -1590,6 +1876,77 @@ def telegram_webhook():
             }), 200
 
         # -------------------------------------------------
+        # CALLBACK QUERY (нажатие на кнопку)
+        # -------------------------------------------------
+
+        callback_query = update.get(
+            "callback_query"
+        )
+
+        if callback_query:
+
+            user_id = callback_query.get(
+                "from",
+                {}
+            ).get("id")
+
+            callback_data = callback_query.get(
+                "data"
+            )
+
+            logging.info(
+                "Telegram callback_query: user=%s data=%s",
+                user_id,
+                callback_data
+            )
+
+            # Подтверждение анкеты "Да"
+            if callback_data == f"anketa_confirm_yes_{user_id}":
+
+                send_telegram_text_with_buttons(
+                    user_id,
+                    "🎉 Отлично! Вот ссылка на чат:\n\n"
+                    "👇 Нажмите кнопку ниже, чтобы вступить:",
+                    {
+                        "inline_keyboard": [
+                            [
+                                {
+                                    "text": "🔗 Вступить в чат",
+                                    "url": "https://t.me/dmdznakomstva"  
+                                }
+                            ]
+                        ]
+                    }
+                )
+
+                # Отправляем анкету в оба чата
+                send_anketa_to_telegram_chat(user_id)
+                send_anketa_to_max_chat(user_id)
+
+                # Удаляем пользователя из процесса заполнения
+                del users_anketa[user_id]
+
+            # Подтверждение анкеты "Нет"
+            elif callback_data == f"anketa_confirm_no_{user_id}":
+
+                send_telegram_text_with_buttons(
+                    user_id,
+                    "Хорошо! Давайте начнём сначала.\n\n"
+                    f"{ANKETA_QUESTIONS[0]['text']}",
+                    None
+                )
+
+                # Перезапускаем анкету
+                users_anketa[user_id] = {
+                    "current_question": 0,
+                    "data": {}
+                }
+
+            return jsonify({
+                "ok": True
+            }), 200
+
+        # -------------------------------------------------
         # ОБЫЧНОЕ СООБЩЕНИЕ
         # -------------------------------------------------
 
@@ -1599,9 +1956,23 @@ def telegram_webhook():
 
         if message:
 
-            handle_telegram_message(
-                message
-            )
+            text = message.get("text")
+
+            # Проверяем команду /start
+            if text == "/start":
+
+                user_id = message.get(
+                    "from",
+                    {}
+                ).get("id")
+
+                start_anketa(user_id)
+
+            else:
+
+                handle_telegram_message(
+                    message
+                )
 
         # -------------------------------------------------
         # CHANNEL POST
@@ -2151,4 +2522,4 @@ if __name__ == "__main__":
     app.run(
         host="0.0.0.0",
         port=port
-                )
+    )
