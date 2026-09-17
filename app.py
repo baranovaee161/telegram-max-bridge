@@ -2492,6 +2492,85 @@ def max_webhook():
 
 
 # =========================================================
+# ВЕБ-ФОРМА АНКЕТЫ
+# =========================================================
+
+@app.route("/anketa", methods=["GET"])
+def anketa_page():
+    """Страница с веб-формой анкеты"""
+
+    try:
+        with open('templates/anketa.html', 'r', encoding='utf-8') as f:
+            html_content = f.read()
+        return html_content
+    except Exception:
+        logging.exception("Error loading anketa page")
+        return "Error loading form", 500
+
+
+@app.route("/submit-anketa", methods=["POST"])
+def submit_anketa():
+    """Обработка отправленной анкеты из веб-формы"""
+
+    try:
+        data = request.get_json()
+
+        logging.info("Web anketa submitted: %s", data)
+
+        platform = data.get("platform", "telegram")
+
+        anketa_data = {
+            "name": data.get("name"),
+            "age": data.get("age"),
+            "zodiac": data.get("zodiac"),
+            "goal": data.get("goal"),
+            "children": data.get("children"),
+            "friendship": data.get("friendship")
+        }
+
+        anketa_message = (
+            "🆕 <b>Новый участник присоединился!</b>\n\n"
+            f"👤 <b>Имя:</b> {anketa_data['name']}\n"
+            f"🎂 <b>Возраст:</b> {anketa_data['age']}\n"
+            f"♓ <b>Знак зодиака:</b> {anketa_data['zodiac']}\n"
+            f"🎯 <b>Цель прихода:</b> {anketa_data['goal']}\n"
+            f"👶 <b>Дети:</b> {anketa_data['children']}\n"
+            f"💭 <b>О дружбе М-Ж:</b> {anketa_data['friendship']}\n\n"
+            "Добро пожаловать в наше сообщество! 🎉"
+        )
+
+        if platform == "telegram":
+
+            send_telegram_text_with_buttons(
+                TELEGRAM_CHAT_ID,
+                anketa_message,
+                None
+            )
+
+            chat_url = "https://t.me/dmdznakomstva"
+
+        else:
+
+            send_max_text(anketa_message)
+
+            chat_url = "https://max.ru/join/7R4ChrPwFUBLS_Xp_zc-M43YkTLHHNOF2wPMfx5uuNg"
+
+        return jsonify({
+            "success": True,
+            "chat_url": chat_url
+        }), 200
+
+    except Exception as e:
+
+        logging.exception("Error submitting anketa")
+
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+# =========================================================
 # START SERVER
 # =========================================================
 
