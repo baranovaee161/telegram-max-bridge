@@ -2510,14 +2510,27 @@ def anketa_page():
 
 @app.route("/submit-anketa", methods=["POST"])
 def submit_anketa():
-    """Обработка отправленной анкеты из веб-формы"""
+    """
+    Обработка отправленной анкеты из веб-формы.
+
+    ИСПРАВЛЕНО:
+    1. platform теперь определяется надёжно (см. anketa.html) и,
+       если по какой-то причине не пришёл вообще, используется "telegram"
+       по умолчанию (раньше здесь была ошибка: если platform приходил
+       как null, значение по умолчанию не подставлялось, и анкета
+       всегда уходила в Max).
+    2. Анкета теперь ВСЕГДА отправляется в ОБА чата — и в Telegram,
+       и в Max — независимо от выбранной платформы.
+    3. Текст сообщения очищен от эмодзи и HTML-тегов, чтобы одинаково
+       красиво выглядеть в обоих мессенджерах.
+    """
 
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
 
         logging.info("Web anketa submitted: %s", data)
 
-        platform = data.get("platform", "telegram")
+        platform = data.get("platform") or "telegram"
 
         anketa_data = {
             "name": data.get("name"),
@@ -2528,32 +2541,33 @@ def submit_anketa():
             "friendship": data.get("friendship")
         }
 
+        # Единый чистый текст без эмодзи и HTML-тегов —
+        # одинаково хорошо смотрится и в Telegram, и в Max.
         anketa_message = (
-            "🆕 <b>Новый участник присоединился!</b>\n\n"
-            f"👤 <b>Имя:</b> {anketa_data['name']}\n"
-            f"🎂 <b>Возраст:</b> {anketa_data['age']}\n"
-            f"♓ <b>Знак зодиака:</b> {anketa_data['zodiac']}\n"
-            f"🎯 <b>Цель прихода:</b> {anketa_data['goal']}\n"
-            f"👶 <b>Дети:</b> {anketa_data['children']}\n"
-            f"💭 <b>О дружбе М-Ж:</b> {anketa_data['friendship']}\n\n"
-            "Добро пожаловать в наше сообщество! 🎉"
+            "Новый участник присоединился!\n\n"
+            f"Имя: {anketa_data['name']}\n"
+            f"Возраст: {anketa_data['age']}\n"
+            f"Знак зодиака: {anketa_data['zodiac']}\n"
+            f"Цель прихода: {anketa_data['goal']}\n"
+            f"Дети: {anketa_data['children']}\n"
+            f"О дружбе М-Ж: {anketa_data['friendship']}\n\n"
+            "Добро пожаловать в наше сообщество!"
         )
 
-        if platform == "telegram":
+        # Отправляем в ОБА чата всегда
+        send_telegram_text_with_buttons(
+            TELEGRAM_CHAT_ID,
+            anketa_message,
+            None
+        )
 
-            send_telegram_text_with_buttons(
-                TELEGRAM_CHAT_ID,
-                anketa_message,
-                None
-            )
+        send_max_text(anketa_message)
 
-            chat_url = "https://t.me/dmdznakomstva"
-
-        else:
-
-            send_max_text(anketa_message)
-
+        # Ссылка "Вступить" ведёт туда, что выбрал человек
+        if platform == "max":
             chat_url = "https://max.ru/join/7R4ChrPwFUBLS_Xp_zc-M43YkTLHHNOF2wPMfx5uuNg"
+        else:
+            chat_url = "https://t.me/dmdznakomstva"
 
         return jsonify({
             "success": True,
