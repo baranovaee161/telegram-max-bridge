@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Анкета знакомств</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 600px;
+            width: 100%;
+            padding: 40px;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .header h1 {
+            color: #333;
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            color: #666;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        .form-group {
+            margin-bottom: 25px;
+        }
+
+        .form-group label {
+            display: block;
+            color: #333;
+            font-weight: 600;
+            margin-bottom: 10px;
+            font-size: 16px;
+        }
+
+        .form-group input,
+        .form-group textarea {
+            width: 100%;
+            padding: 12px 15px;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            font-size: 14px;
+            font-family: inherit;
+            transition: border-color 0.3s;
+        }
+
+        .form-group input:focus,
+        .form-group textarea:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .form-group textarea {
+            resize: vertical;
+            min-height: 80px;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 15px;
+            margin-top: 40px;
+        }
+
+        .btn {
+            flex: 1;
+            padding: 15px;
+            border: none;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            color: white;
+        }
+
+        .btn-telegram {
+            background: linear-gradient(135deg, #0088cc 0%, #0066aa 100%);
+        }
+
+        .btn-telegram:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px rgba(0, 136, 204, 0.3);
+        }
+
+        .btn-max {
+            background: linear-gradient(135deg, #ff6b6b 0%, #ee5a3f 100%);
+        }
+
+        .btn-max:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px rgba(255, 107, 107, 0.3);
+        }
+
+        .emoji {
+            font-size: 20px;
+            margin-right: 8px;
+        }
+
+        .success-message {
+            display: none;
+            text-align: center;
+            padding: 30px;
+        }
+
+        .success-message h2 {
+            color: #667eea;
+            margin-bottom: 15px;
+        }
+
+        .success-message p {
+            color: #666;
+            margin-bottom: 10px;
+        }
+
+        .success-message a {
+            display: inline-block;
+            margin-top: 10px;
+            padding: 12px 30px;
+            background: #667eea;
+            color: white;
+            text-decoration: none;
+            border-radius: 10px;
+            transition: all 0.3s;
+        }
+
+        .success-message a:hover {
+            background: #764ba2;
+        }
+
+        @media (max-width: 600px) {
+            .container {
+                padding: 25px;
+            }
+
+            .header h1 {
+                font-size: 22px;
+            }
+
+            .button-group {
+                flex-direction: column;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>👋 Привет, романтик!</h1>
+            <p>Ты хочешь вступить в чат знакомств? Но погодите! 🛑<br><br>
+            Прежде чем ты начнёшь писать "Привет, как дела?" каждому подряд, 
+            давай я задам тебе несколько вопросов, чтобы твоё вступление было 
+            не таким скучным! 😄</p>
+        </div>
+
+        <form id="anketaForm">
+            <div class="form-group">
+                <label><span class="emoji">👤</span>Как тебя зовут?</label>
+                <input type="text" name="name" required 
+                       placeholder="Пожалуйста, не пиши @username 😅">
+            </div>
+
+            <div class="form-group">
+                <label><span class="emoji">🎂</span>Сколько тебе лет?</label>
+                <input type="number" name="age" required min="18" max="120"
+                       placeholder="Честно! Интернет помнит всё 📸">
+            </div>
+
+            <div class="form-group">
+                <label><span class="emoji">♓</span>Какой у тебя знак зодиака?</label>
+                <input type="text" name="zodiac" required
+                       placeholder="Может, это объясняет твоё поведение? 🔮">
+            </div>
+
+            <div class="form-group">
+                <label><span class="emoji">🎯</span>Зачем ты сюда пришел(а)?</label>
+                <textarea name="goal" required
+                          placeholder="Ищешь вторую половинку? Друзей? Или просто скучно было? 😏"></textarea>
+            </div>
+
+            <div class="form-group">
+                <label><span class="emoji">👶</span>Есть ли у тебя дети?</label>
+                <input type="text" name="children" required
+                       placeholder="Если да, они тоже на телефоне? 👶📱">
+            </div>
+
+            <div class="form-group">
+                <label><span class="emoji">💭</span>Последний вопрос (самый сложный):<br>Существует ли дружба между мужчиной и женщиной?</label>
+                <textarea name="friendship" required
+                          placeholder="Или это как Лох-Несское чудовище? 🦕"></textarea>
+            </div>
+
+            <div class="button-group">
+                <button type="submit" class="btn btn-telegram" name="platform" value="telegram">
+                    <span class="emoji">✈️</span>Вступить в Telegram
+                </button>
+                <button type="submit" class="btn btn-max" name="platform" value="max">
+                    <span class="emoji">💬</span>Вступить в Max
+                </button>
+            </div>
+        </form>
+
+        <div class="success-message" id="successMessage">
+            <h2>🎉 Спасибо!</h2>
+            <p>Твоя анкета отправлена в чат!</p>
+            <p id="chatLink"></p>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('anketaForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const formData = new FormData(e.target);
+            const platform = formData.get('platform');
+
+            const data = {
+                name: formData.get('name'),
+                age: formData.get('age'),
+                zodiac: formData.get('zodiac'),
+                goal: formData.get('goal'),
+                children: formData.get('children'),
+                friendship: formData.get('friendship'),
+                platform: platform
+            };
+
+            try {
+                const response = await fetch('/submit-anketa', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(data)
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    document.getElementById('anketaForm').style.display = 'none';
+                    const chatLink = document.getElementById('chatLink');
+                    
+                    if (platform === 'telegram') {
+                        chatLink.innerHTML = '<a href="' + result.chat_url + '" target="_blank">👇 Нажми сюда, чтобы войти в чат</a>';
+                    } else {
+                        chatLink.innerHTML = '<a href="' + result.chat_url + '" target="_blank">👇 Нажми сюда, чтобы войти в чат</a>';
+                    }
+                    
+                    document.getElementById('successMessage').style.display = 'block';
+                }
+            } catch (error) {
+                alert('Ошибка при отправке! Попробуй ещё раз.');
+                console.error(error);
+            }
+        });
+    </script>
+</body>
+</html>
