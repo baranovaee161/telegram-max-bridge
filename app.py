@@ -9,33 +9,46 @@ from flask import Flask, request, jsonify
 
 
 # =========================================================
-# ЧТО НОВОГО В ЭТОЙ ВЕРСИИ
+# ЧТО НОВОГО В ЭТОЙ ВЕРСИИ (правки от Claude)
 # =========================================================
 #
-# 1. ОТВЕТЫ (reply) в обе стороны.
-#    Если человек в Telegram свайпает и отвечает на конкретное
-#    сообщение — в MAX это сообщение тоже придёт помеченным
-#    как ответ на нужное сообщение. И наоборот.
+# 1. ИСПРАВЛЕН REPLY Telegram -> MAX.
+#    Раньше поле `link` при отправке в MAX API отправлялось как
+#    {"type": "reply", "message": {"mid": ...}} — MAX не понимает
+#    такой формат и молча его игнорирует. По официальной схеме
+#    MAX (dev.max.ru/docs-api) правильный формат:
+#        {"type": "reply", "mid": "..."}
+#    Из-за этого свайп-ответ в Telegram долетал до MAX как обычное
+#    сообщение, без привязки к исходному. Теперь исправлено и в
+#    send_max_text(), и в send_max_attachment() — обе стороны
+#    (MAX -> Telegram и Telegram -> MAX) должны работать одинаково.
 #
-# 2. УДАЛЕНИЕ: MAX -> Telegram.
-#    Если человек удаляет своё сообщение в MAX, бот попробует
-#    удалить связанное сообщение в Telegram.
-#    ВАЖНО: обратное (Telegram -> MAX) сделать НЕЛЬЗЯ —
-#    это ограничение самого Telegram Bot API: он в принципе
-#    не сообщает ботам, когда пользователь удаляет своё
-#    сообщение. Поэтому эта часть реализована только в одну
-#    сторону.
+# 2. ИСПРАВЛЕНО ЧТЕНИЕ СОБЫТИЯ message_removed (MAX -> Telegram).
+#    По официальной схеме MAX update `message_removed` содержит
+#    поля message_id / chat_id / user_id ПРЯМО В КОРНЕ события,
+#    а не внутри message.body.mid. Раньше код перебирал
+#    несуществующие пути и только случайно попадал в нужное поле
+#    через fallback. Теперь читаем поле напрямую и дополнительно
+#    сверяем chat_id, чтобы не среагировать на чужой чат.
 #
-# 3. АВАТАРКИ.
-#    При первом сообщении от человека бот один раз пересылает
-#    его аватар как картинку в другой чат (чтобы не спамить
-#    аватаркой на каждое сообщение).
+# 3. УДАЛЕНИЕ Telegram -> MAX: ПРИНЦИПИАЛЬНО НЕВОЗМОЖНО через
+#    Bot API. Telegram в принципе не уведомляет ботов о том, что
+#    пользователь удалил своё сообщение (в отличие от MAX, который
+#    шлёт update message_removed). Обойти это можно только заменив
+#    Telegram-бота на пользовательскую сессию (Telethon/Pyrogram
+#    с входом по номеру телефона вместо токена бота) — это другая
+#    архитектура и другие риски по ToS Telegram, здесь НЕ реализовано.
 #
-# Для пунктов 1 и 2 нужна "записная книжка" — связка
-# ID сообщения в Telegram <-> ID сообщения в MAX.
-# Она хранится в памяти (см. ниже tg_to_max_id / max_to_tg_id).
-# Это значит, что при перезапуске сервера на Render старые
-# связки теряются — это нормально и не критично для чата.
+# 4. АВАТАРКИ.
+#    Ни Telegram, ни MAX Bot API не позволяют показать картинку
+#    "рядом с именем" внутри одного сообщения от лица стороннего
+#    человека — это рисует только сам клиент на основе профиля.
+#    Поэтому сохранён прежний практический вариант: при первом
+#    сообщении от человека за сессию бот один раз пересылает его
+#    аватар отдельным фото-сообщением в другой чат. Важно: список
+#    "кому уже отправляли" хранится в памяти процесса, поэтому после
+#    каждого перезапуска сервера на Render аватар разошлётся заново
+#    при следующем сообщении каждого пользователя — это ожидаемо.
 #
 # =========================================================
 
@@ -1061,11 +1074,18 @@ def send_max_text(text, reply_to_mid=None):
 
     if reply_to_mid:
 
+        # -----------------------------------------------------
+        # ВАЖНО (правка):
+        # По официальной схеме MAX (NewMessageLink) поле mid
+        # лежит ПРЯМО внутри link, а не во вложенном объекте
+        # "message". Старый вариант {"link": {"type": "reply",
+        # "message": {"mid": ...}}} MAX не распознаёт и молча
+        # игнорирует — из-за этого reply Telegram -> MAX не работал.
+        # -----------------------------------------------------
+
         payload["link"] = {
             "type": "reply",
-            "message": {
-                "mid": reply_to_mid
-            }
+            "mid": reply_to_mid
         }
 
     result = max_request(
@@ -1438,11 +1458,12 @@ def send_max_attachment(
 
     if reply_to_mid:
 
+        # Тот же формат link, что и в send_max_text() — mid
+        # напрямую внутри link, без вложенного "message".
+
         payload["link"] = {
             "type": "reply",
-            "message": {
-                "mid": reply_to_mid
-            }
+            "mid": reply_to_mid
         }
 
     # -----------------------------------------------------
@@ -1563,6 +1584,36 @@ def send_max_file(
         filename,
         "file",
         reply_to_mid=reply_to_mid
+    )
+
+
+# =========================================================
+# MAX DELETE MESSAGE
+# =========================================================
+#
+# По официальной документации MAX:
+#   DELETE /messages?message_id={mid}
+#   Заголовок Authorization: {access_token}
+#
+# Сейчас в этом мосте она не вызывается (см. пункт 3 в шапке
+# файла — Telegram не сообщает об удалении своих сообщений),
+# но оставлена на будущее — например, если вы захотите удалять
+# сообщение в MAX вручную командой, или подключите пользовательскую
+# сессию Telegram, которая такие события всё-таки получает.
+# =========================================================
+
+def delete_max_message(mid):
+
+    if not mid:
+
+        return None
+
+    return max_request(
+        "DELETE",
+        "/messages",
+        params={
+            "message_id": mid
+        }
     )
 
 
@@ -1913,6 +1964,14 @@ def handle_telegram_message(message):
         if reply_to_tg_id
         else None
     )
+
+    if reply_to_tg_id:
+
+        logging.info(
+            "Telegram reply detected: tg_msg=%s -> max_mid=%s",
+            reply_to_tg_id,
+            reply_to_max_mid
+        )
 
     # -----------------------------------------------------
     # Аватар (один раз на пользователя за сессию)
@@ -2414,6 +2473,13 @@ def telegram_webhook():
                 channel_post
             )
 
+        # -------------------------------------------------
+        # NB: Telegram Bot API НЕ присылает update, когда
+        # пользователь удаляет своё сообщение — поэтому здесь
+        # намеренно нет обработчика "удалённого сообщения".
+        # Это ограничение самого Telegram, не этого кода.
+        # -------------------------------------------------
+
         return jsonify({
             "ok": True
         }), 200
@@ -2563,16 +2629,31 @@ def handle_max_message(event):
 
     if isinstance(link, dict) and link.get("type") == "reply":
 
-        reply_to_max_mid = link.get(
-            "message",
-            {}
-        ).get("mid")
+        # У входящих сообщений MAX присылает mid ссылки либо
+        # прямо в link.mid, либо (в некоторых версиях схемы)
+        # во вложенном link.message.mid — проверяем оба варианта.
+
+        reply_to_max_mid = (
+            link.get("mid")
+            or link.get(
+                "message",
+                {}
+            ).get("mid")
+        )
 
     reply_to_tg_id = (
         max_to_tg_id.get(reply_to_max_mid)
         if reply_to_max_mid
         else None
     )
+
+    if reply_to_max_mid:
+
+        logging.info(
+            "MAX reply detected: max_mid=%s -> tg_msg=%s",
+            reply_to_max_mid,
+            reply_to_tg_id
+        )
 
     # -----------------------------------------------------
     # Аватар (один раз на пользователя за сессию)
@@ -2892,15 +2973,14 @@ def handle_max_message(event):
 # MAX -> TELEGRAM: УДАЛЕНИЕ СООБЩЕНИЯ
 # =========================================================
 #
-# ВАЖНО:
-# Мы не можем гарантировать заранее точное имя события и поля
-# с ID удалённого сообщения — это зависит от того, как именно
-# MAX формирует такие уведомления. Ниже проверяются несколько
-# наиболее вероятных вариантов. Полное "сырое" событие в любом
-# случае попадает в лог (logging.info ниже) — если удаление
-# не сработает с первого раза, найдите в логах Render строку
-# "MAX deletion event:" и пришлите её мне, чтобы я поправила
-# нужное поле.
+# Правка: по официальной схеме апдейта message_removed поля
+# лежат ПРЯМО В КОРНЕ события:
+#   { "update_type": "message_removed",
+#     "message_id": "mid...", "chat_id": ..., "user_id": ... }
+# Раньше код сначала пытался достать mid из несуществующих
+# message.body.mid / message.mid и только потом (случайно)
+# попадал в верный event.get("message_id") через fallback.
+# Теперь читаем поле напрямую и сверяем chat_id для надёжности.
 # =========================================================
 
 def handle_max_message_deleted(event):
@@ -2910,40 +2990,38 @@ def handle_max_message_deleted(event):
         str(event)[:5000]
     )
 
-    message = event.get(
-        "message",
-        event
-    )
+    removed_mid = event.get("message_id")
 
-    removed_mid = None
-
-    if isinstance(message, dict):
-
-        body = message.get("body", {})
-
-        removed_mid = (
-            message.get("mid")
-            or (
-                body.get("mid")
-                if isinstance(body, dict)
-                else None
-            )
-        )
-
-    if not removed_mid:
-
-        removed_mid = (
-            event.get("mid")
-            or event.get("message_id")
-        )
+    event_chat_id = event.get("chat_id")
 
     if not removed_mid:
 
         logging.warning(
-            "MAX deletion event without a recognizable message id"
+            "MAX deletion event without message_id: %s",
+            str(event)[:2000]
         )
 
         return
+
+    # Если MAX прислал chat_id, на всякий случай сверяем его
+    # с нашим MAX_CHAT_ID, чтобы не среагировать на чужой чат.
+
+    if event_chat_id is not None and MAX_CHAT_ID:
+
+        try:
+
+            if int(event_chat_id) != int(MAX_CHAT_ID):
+
+                logging.info(
+                    "MAX deletion event from another chat (%s), ignoring",
+                    event_chat_id
+                )
+
+                return
+
+        except Exception:
+
+            pass
 
     tg_id = max_to_tg_id.get(removed_mid)
 
