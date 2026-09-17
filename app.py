@@ -50,6 +50,11 @@ from flask import Flask, request, jsonify
 #    каждого перезапуска сервера на Render аватар разошлётся заново
 #    при следующем сообщении каждого пользователя — это ожидаемо.
 #
+# 5. ИСПРАВЛЕНЫ КНОПКИ ВСТУПЛЕНИЯ В АНКЕТЕ.
+#    Теперь после подтверждения анкеты пользователю показываются
+#    ДВЕ кнопки: одна ведёт в Telegram чат, другая — в Max чат.
+#    Каждая кнопка имеет свою правильную ссылку.
+#
 # =========================================================
 
 
@@ -93,6 +98,20 @@ PUBLIC_URL = (
 ).rstrip("/")
 
 MAX_API = "https://platform-api2.max.ru"
+
+# =========================================================
+# ССЫЛКИ НА ЧАТЫ (для вступления)
+# =========================================================
+
+TELEGRAM_CHAT_URL = os.getenv(
+    "TELEGRAM_CHAT_URL",
+    "https://t.me/dmdznakomstva"
+)
+
+MAX_CHAT_URL = os.getenv(
+    "MAX_CHAT_URL",
+    "https://max.ru/join/7R4ChrPwFUBLS_Xp_zc-M43YkTLHHNOF2wPMfx5uuNg"
+)
 
 
 # =========================================================
@@ -237,6 +256,16 @@ logging.info(
 logging.info(
     "PUBLIC_URL: %s",
     PUBLIC_URL if PUBLIC_URL else "NOT SET"
+)
+
+logging.info(
+    "TELEGRAM_CHAT_URL: %s",
+    TELEGRAM_CHAT_URL
+)
+
+logging.info(
+    "MAX_CHAT_URL: %s",
+    MAX_CHAT_URL
 )
 
 
@@ -2386,14 +2415,20 @@ def telegram_webhook():
 
                 send_telegram_text_with_buttons(
                     user_id,
-                    "🎉 Отлично! Вот ссылка на чат:\n\n"
-                    "👇 Нажмите кнопку ниже, чтобы вступить:",
+                    "🎉 Отлично! Выберите, куда вступить:\n\n"
+                    "👇 Нажмите одну из кнопок ниже:",
                     {
                         "inline_keyboard": [
                             [
                                 {
-                                    "text": "🔗 Вступить в чат",
-                                    "url": "https://t.me/dmdznakomstva"  
+                                    "text": "📱 Вступить в Telegram",
+                                    "url": TELEGRAM_CHAT_URL
+                                }
+                            ],
+                            [
+                                {
+                                    "text": "💬 Вступить в Max",
+                                    "url": MAX_CHAT_URL
                                 }
                             ]
                         ]
@@ -3209,9 +3244,9 @@ def submit_anketa():
 
         # Ссылка "Вступить" ведёт туда, что выбрал человек
         if platform == "max":
-            chat_url = "https://max.ru/join/7R4ChrPwFUBLS_Xp_zc-M43YkTLHHNOF2wPMfx5uuNg"
+            chat_url = MAX_CHAT_URL
         else:
-            chat_url = "https://t.me/dmdznakomstva"
+            chat_url = TELEGRAM_CHAT_URL
 
         return jsonify({
             "success": True,
