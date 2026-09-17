@@ -212,14 +212,14 @@
             <div class="form-group">
                 <label><span class="emoji">💭</span>Последний вопрос (самый сложный):<br>Существует ли дружба между мужчиной и женщиной?</label>
                 <textarea name="friendship" required
-                          placeholder="Или это как Лох-Несское чудовище? 🦕"></textarea>
+                          placeholder="Или это как Лох-Nesское чудовище? 🦕"></textarea>
             </div>
 
             <div class="button-group">
-                <button type="submit" class="btn btn-telegram" name="platform" value="telegram">
+                <button type="button" class="btn btn-telegram">
                     <span class="emoji">✈️</span>Вступить в Telegram
                 </button>
-                <button type="submit" class="btn btn-max" name="platform" value="max">
+                <button type="button" class="btn btn-max">
                     <span class="emoji">💬</span>Вступить в Max
                 </button>
             </div>
@@ -233,12 +233,23 @@
     </div>
 
     <script>
-        document.getElementById('anketaForm').addEventListener('submit', async (e) => {
+        const form = document.getElementById('anketaForm');
+        
+        // Обработчик для кнопки Telegram
+        document.querySelector('.btn-telegram').addEventListener('click', function(e) {
             e.preventDefault();
-
-            const formData = new FormData(e.target);
-            const platform = formData.get('platform');
-
+            submitForm('telegram');
+        });
+        
+        // Обработчик для кнопки Max
+        document.querySelector('.btn-max').addEventListener('click', function(e) {
+            e.preventDefault();
+            submitForm('max');
+        });
+        
+        async function submitForm(platform) {
+            const formData = new FormData(form);
+            
             const data = {
                 name: formData.get('name'),
                 age: formData.get('age'),
@@ -248,7 +259,10 @@
                 friendship: formData.get('friendship'),
                 platform: platform
             };
-
+            
+            console.log('Sending platform:', platform);
+            console.log('Full data:', data);
+            
             try {
                 const response = await fetch('/submit-anketa', {
                     method: 'POST',
@@ -259,16 +273,14 @@
                 });
 
                 const result = await response.json();
+                console.log('Server response:', result);
 
                 if (result.success) {
                     document.getElementById('anketaForm').style.display = 'none';
                     const chatLink = document.getElementById('chatLink');
                     
-                    if (platform === 'telegram') {
-                        chatLink.innerHTML = '<a href="' + result.chat_url + '" target="_blank">👇 Нажми сюда, чтобы войти в чат</a>';
-                    } else {
-                        chatLink.innerHTML = '<a href="' + result.chat_url + '" target="_blank">👇 Нажми сюда, чтобы войти в чат</a>';
-                    }
+                    console.log('Chat URL:', result.chat_url);
+                    chatLink.innerHTML = '<a href="' + result.chat_url + '" target="_blank">👇 Нажми сюда, чтобы войти в чат</a>';
                     
                     document.getElementById('successMessage').style.display = 'block';
                 }
@@ -276,7 +288,7 @@
                 alert('Ошибка при отправке! Попробуй ещё раз.');
                 console.error(error);
             }
-        });
+        }
     </script>
 </body>
 </html>
