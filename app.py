@@ -1,10 +1,43 @@
 import os
 import time
+import json
 import logging
 import requests
 import urllib3
 
 from flask import Flask, request, jsonify
+
+
+# =========================================================
+# ЧТО НОВОГО В ЭТОЙ ВЕРСИИ
+# =========================================================
+#
+# 1. ОТВЕТЫ (reply) в обе стороны.
+#    Если человек в Telegram свайпает и отвечает на конкретное
+#    сообщение — в MAX это сообщение тоже придёт помеченным
+#    как ответ на нужное сообщение. И наоборот.
+#
+# 2. УДАЛЕНИЕ: MAX -> Telegram.
+#    Если человек удаляет своё сообщение в MAX, бот попробует
+#    удалить связанное сообщение в Telegram.
+#    ВАЖНО: обратное (Telegram -> MAX) сделать НЕЛЬЗЯ —
+#    это ограничение самого Telegram Bot API: он в принципе
+#    не сообщает ботам, когда пользователь удаляет своё
+#    сообщение. Поэтому эта часть реализована только в одну
+#    сторону.
+#
+# 3. АВАТАРКИ.
+#    При первом сообщении от человека бот один раз пересылает
+#    его аватар как картинку в другой чат (чтобы не спамить
+#    аватаркой на каждое сообщение).
+#
+# Для пунктов 1 и 2 нужна "записная книжка" — связка
+# ID сообщения в Telegram <-> ID сообщения в MAX.
+# Она хранится в памяти (см. ниже tg_to_max_id / max_to_tg_id).
+# Это значит, что при перезапуске сервера на Render старые
+# связки теряются — это нормально и не критично для чата.
+#
+# =========================================================
 
 
 # =========================================================
@@ -88,6 +121,71 @@ ANKETA_QUESTIONS = [
 
 # Хранилище пользователей, заполняющих анкету
 users_anketa = {}
+
+
+# =========================================================
+# МОСТ: СВЯЗКА ID СООБЩЕНИЙ (для reply и удаления)
+# =========================================================
+
+# tg_message_id -> max_message_id
+tg_to_max_id = {}
+
+# max_message_id -> tg_message_id
+max_to_tg_id = {}
+
+
+def remember_message_pair(tg_id, max_id):
+    """Запоминает пару ID сообщений в обе стороны."""
+
+    if tg_id is not None and max_id is not None:
+
+        tg_to_max_id[tg_id] = max_id
+        max_to_tg_id[max_id] = tg_id
+
+        logging.info(
+            "Message pair linked: telegram=%s <-> max=%s",
+            tg_id,
+            max_id
+        )
+
+
+def extract_max_message_id(result):
+    """Достаёт ID (mid) отправленного сообщения из ответа MAX API."""
+
+    if not isinstance(result, dict):
+
+        return None
+
+    message = result.get("message", result)
+
+    if not isinstance(message, dict):
+
+        return None
+
+    body = message.get("body", {})
+
+    if isinstance(body, dict) and body.get("mid"):
+
+        return body.get("mid")
+
+    return message.get("mid")
+
+
+def extract_telegram_message_id(result):
+    """Достаёт message_id отправленного сообщения из ответа Telegram API."""
+
+    if not isinstance(result, dict):
+
+        return None
+
+    return result.get("result", {}).get("message_id")
+
+
+# Кэш: кому уже отправляли аватарку, чтобы не слать её
+# на каждое сообщение, а только один раз за время работы сервера.
+
+avatar_sent_telegram_users = set()
+avatar_sent_max_users = set()
 
 
 # =========================================================
@@ -212,6 +310,22 @@ def telegram_api(
         )
 
         return None
+
+
+def telegram_reply_parameters_json(reply_to_message_id):
+    """
+    Для запросов с файлами (multipart/form-data) объектные поля
+    нужно передавать JSON-строкой, а не питоновским словарём.
+    """
+
+    if not reply_to_message_id:
+
+        return None
+
+    return json.dumps({
+        "message_id": reply_to_message_id,
+        "allow_sending_without_reply": True
+    })
 
 
 # =========================================================
@@ -363,7 +477,8 @@ def setup_telegram_webhook():
 def send_telegram_text_with_buttons(
     chat_id,
     text,
-    buttons=None
+    buttons=None,
+    reply_to_message_id=None
 ):
 
     if not TELEGRAM_TOKEN:
@@ -372,7 +487,7 @@ def send_telegram_text_with_buttons(
             "TELEGRAM_TOKEN is not configured"
         )
 
-        return False
+        return None
 
     url = (
         f"https://api.telegram.org/"
@@ -387,6 +502,12 @@ def send_telegram_text_with_buttons(
 
     if buttons:
         data["reply_markup"] = buttons
+
+    if reply_to_message_id:
+        data["reply_parameters"] = {
+            "message_id": reply_to_message_id,
+            "allow_sending_without_reply": True
+        }
 
     try:
 
@@ -403,9 +524,17 @@ def send_telegram_text_with_buttons(
 
         if not response.ok:
 
-            return False
+            return None
 
-        return response.json().get("ok", False)
+        result = response.json()
+
+        if not result.get("ok"):
+
+            return None
+
+        # Возвращаем полный ответ — из него можно достать
+        # result["result"]["message_id"] для связки сообщений.
+        return result
 
     except Exception:
 
@@ -413,14 +542,14 @@ def send_telegram_text_with_buttons(
             "Telegram sendMessage error"
         )
 
-        return False
+        return None
 
 
 # =========================================================
 # TELEGRAM SEND TEXT
 # =========================================================
 
-def send_telegram_text(text):
+def send_telegram_text(text, reply_to_message_id=None):
 
     if not TELEGRAM_CHAT_ID:
 
@@ -428,12 +557,13 @@ def send_telegram_text(text):
             "TELEGRAM_CHAT_ID is not configured"
         )
 
-        return False
+        return None
 
     return send_telegram_text_with_buttons(
         TELEGRAM_CHAT_ID,
         text,
-        None
+        None,
+        reply_to_message_id=reply_to_message_id
     )
 
 
@@ -444,7 +574,8 @@ def send_telegram_text(text):
 def send_telegram_photo(
     photo_bytes,
     filename="photo.jpg",
-    caption=None
+    caption=None,
+    reply_to_message_id=None
 ):
 
     if not TELEGRAM_CHAT_ID:
@@ -453,7 +584,7 @@ def send_telegram_photo(
             "TELEGRAM_CHAT_ID is not configured"
         )
 
-        return False
+        return None
 
     files = {
         "photo": (
@@ -471,15 +602,25 @@ def send_telegram_photo(
 
         data["caption"] = caption
 
+    reply_json = telegram_reply_parameters_json(
+        reply_to_message_id
+    )
+
+    if reply_json:
+
+        data["reply_parameters"] = reply_json
+
     result = telegram_api(
         "sendPhoto",
         data=data,
         files=files
     )
 
-    return bool(
-        result and result.get("ok")
-    )
+    if not result or not result.get("ok"):
+
+        return None
+
+    return result
 
 
 # =========================================================
@@ -488,7 +629,8 @@ def send_telegram_photo(
 
 def send_telegram_voice(
     audio_bytes,
-    filename="voice.ogg"
+    filename="voice.ogg",
+    reply_to_message_id=None
 ):
 
     if not TELEGRAM_CHAT_ID:
@@ -497,7 +639,7 @@ def send_telegram_voice(
             "TELEGRAM_CHAT_ID is not configured"
         )
 
-        return False
+        return None
 
     files = {
         "voice": (
@@ -507,17 +649,29 @@ def send_telegram_voice(
         )
     }
 
+    data = {
+        "chat_id": TELEGRAM_CHAT_ID
+    }
+
+    reply_json = telegram_reply_parameters_json(
+        reply_to_message_id
+    )
+
+    if reply_json:
+
+        data["reply_parameters"] = reply_json
+
     result = telegram_api(
         "sendVoice",
-        data={
-            "chat_id": TELEGRAM_CHAT_ID
-        },
+        data=data,
         files=files
     )
 
-    return bool(
-        result and result.get("ok")
-    )
+    if not result or not result.get("ok"):
+
+        return None
+
+    return result
 
 
 # =========================================================
@@ -526,7 +680,8 @@ def send_telegram_voice(
 
 def send_telegram_document(
     file_bytes,
-    filename="file"
+    filename="file",
+    reply_to_message_id=None
 ):
 
     if not TELEGRAM_CHAT_ID:
@@ -535,7 +690,7 @@ def send_telegram_document(
             "TELEGRAM_CHAT_ID is not configured"
         )
 
-        return False
+        return None
 
     files = {
         "document": (
@@ -544,17 +699,29 @@ def send_telegram_document(
         )
     }
 
+    data = {
+        "chat_id": TELEGRAM_CHAT_ID
+    }
+
+    reply_json = telegram_reply_parameters_json(
+        reply_to_message_id
+    )
+
+    if reply_json:
+
+        data["reply_parameters"] = reply_json
+
     result = telegram_api(
         "sendDocument",
-        data={
-            "chat_id": TELEGRAM_CHAT_ID
-        },
+        data=data,
         files=files
     )
 
-    return bool(
-        result and result.get("ok")
-    )
+    if not result or not result.get("ok"):
+
+        return None
+
+    return result
 
 
 # =========================================================
@@ -564,7 +731,8 @@ def send_telegram_document(
 def send_telegram_video(
     video_bytes,
     filename="video.mp4",
-    caption=None
+    caption=None,
+    reply_to_message_id=None
 ):
 
     if not TELEGRAM_CHAT_ID:
@@ -573,7 +741,7 @@ def send_telegram_video(
             "TELEGRAM_CHAT_ID is not configured"
         )
 
-        return False
+        return None
 
     files = {
         "video": (
@@ -591,15 +759,25 @@ def send_telegram_video(
 
         data["caption"] = caption
 
+    reply_json = telegram_reply_parameters_json(
+        reply_to_message_id
+    )
+
+    if reply_json:
+
+        data["reply_parameters"] = reply_json
+
     result = telegram_api(
         "sendVideo",
         data=data,
         files=files
     )
 
-    return bool(
-        result and result.get("ok")
-    )
+    if not result or not result.get("ok"):
+
+        return None
+
+    return result
 
 
 # =========================================================
@@ -663,6 +841,98 @@ def get_telegram_file(file_id):
         )
 
         return None
+
+
+# =========================================================
+# TELEGRAM: АВАТАР ПОЛЬЗОВАТЕЛЯ
+# =========================================================
+
+def get_telegram_avatar_bytes(user_id):
+    """Скачивает самую большую версию аватара пользователя Telegram."""
+
+    if not user_id:
+
+        return None
+
+    result = telegram_api(
+        "getUserProfilePhotos",
+        data={
+            "user_id": user_id,
+            "limit": 1
+        }
+    )
+
+    if not result or not result.get("ok"):
+
+        return None
+
+    photos = result.get(
+        "result",
+        {}
+    ).get(
+        "photos",
+        []
+    )
+
+    if not photos:
+
+        logging.info(
+            "Telegram user %s has no profile photo",
+            user_id
+        )
+
+        return None
+
+    # Первый набор фото, последний (самый крупный) размер
+    largest = photos[0][-1]
+
+    file_id = largest.get("file_id")
+
+    if not file_id:
+
+        return None
+
+    downloaded = get_telegram_file(file_id)
+
+    if not downloaded:
+
+        return None
+
+    file_bytes, _ = downloaded
+
+    return file_bytes
+
+
+def maybe_relay_telegram_avatar_to_max(user_id, sender_name):
+    """Раз в сессию пересылает аватар Telegram-пользователя в MAX."""
+
+    if not user_id or user_id in avatar_sent_telegram_users:
+
+        return
+
+    avatar_sent_telegram_users.add(user_id)
+
+    try:
+
+        avatar_bytes = get_telegram_avatar_bytes(user_id)
+
+        if avatar_bytes:
+
+            send_max_image(
+                avatar_bytes,
+                "avatar.jpg"
+            )
+
+            logging.info(
+                "Relayed Telegram avatar of %s to MAX",
+                sender_name
+            )
+
+    except Exception:
+
+        logging.exception(
+            "Error relaying Telegram avatar to MAX"
+        )
 
 
 # =========================================================
@@ -760,7 +1030,7 @@ def max_request(
 # MAX SEND TEXT
 # =========================================================
 
-def send_max_text(text):
+def send_max_text(text, reply_to_mid=None):
 
     if not MAX_CHAT_ID:
 
@@ -768,7 +1038,7 @@ def send_max_text(text):
             "MAX_CHAT_ID is not configured"
         )
 
-        return False
+        return None
 
     try:
 
@@ -783,11 +1053,20 @@ def send_max_text(text):
             MAX_CHAT_ID
         )
 
-        return False
+        return None
 
     payload = {
         "text": text
     }
+
+    if reply_to_mid:
+
+        payload["link"] = {
+            "type": "reply",
+            "message": {
+                "mid": reply_to_mid
+            }
+        }
 
     result = max_request(
         "POST",
@@ -804,13 +1083,13 @@ def send_max_text(text):
             "MAX text message FAILED"
         )
 
-        return False
+        return None
 
     logging.info(
         "MAX text message SENT"
     )
 
-    return True
+    return result
 
 
 # =========================================================
@@ -1117,7 +1396,8 @@ def send_max_attachment(
     file_bytes,
     file_type,
     filename,
-    attachment_type
+    attachment_type,
+    reply_to_mid=None
 ):
 
     token = upload_to_max(
@@ -1128,7 +1408,7 @@ def send_max_attachment(
 
     if not token:
 
-        return False
+        return None
 
     try:
 
@@ -1143,7 +1423,7 @@ def send_max_attachment(
             MAX_CHAT_ID
         )
 
-        return False
+        return None
 
     payload = {
         "attachments": [
@@ -1155,6 +1435,15 @@ def send_max_attachment(
             }
         ]
     }
+
+    if reply_to_mid:
+
+        payload["link"] = {
+            "type": "reply",
+            "message": {
+                "mid": reply_to_mid
+            }
+        }
 
     # -----------------------------------------------------
     # MAX может ещё обрабатывать файл после upload.
@@ -1197,7 +1486,7 @@ def send_max_attachment(
                 "MAX attachment SENT successfully"
             )
 
-            return True
+            return result
 
         logging.warning(
             "MAX attachment attempt %s failed",
@@ -1208,7 +1497,7 @@ def send_max_attachment(
         "MAX attachment FAILED after all attempts"
     )
 
-    return False
+    return None
 
 
 # =========================================================
@@ -1217,14 +1506,16 @@ def send_max_attachment(
 
 def send_max_image(
     image_bytes,
-    filename="photo.jpg"
+    filename="photo.jpg",
+    reply_to_mid=None
 ):
 
     return send_max_attachment(
         image_bytes,
         "image",
         filename,
-        "image"
+        "image",
+        reply_to_mid=reply_to_mid
     )
 
 
@@ -1234,7 +1525,8 @@ def send_max_image(
 
 def send_max_audio(
     audio_bytes,
-    filename="voice.ogg"
+    filename="voice.ogg",
+    reply_to_mid=None
 ):
 
     # -----------------------------------------------------
@@ -1250,7 +1542,8 @@ def send_max_audio(
         audio_bytes,
         "audio",
         filename,
-        "audio"
+        "audio",
+        reply_to_mid=reply_to_mid
     )
 
 
@@ -1260,15 +1553,84 @@ def send_max_audio(
 
 def send_max_file(
     file_bytes,
-    filename="file"
+    filename="file",
+    reply_to_mid=None
 ):
 
     return send_max_attachment(
         file_bytes,
         "file",
         filename,
-        "file"
+        "file",
+        reply_to_mid=reply_to_mid
     )
+
+
+# =========================================================
+# MAX: АВАТАР ПОЛЬЗОВАТЕЛЯ
+# =========================================================
+
+def maybe_relay_max_avatar_to_telegram(sender):
+    """
+    Раз в сессию пересылает аватар MAX-пользователя в Telegram,
+    если у отправителя есть поле avatar_url / full_avatar_url.
+    """
+
+    if not isinstance(sender, dict):
+
+        return
+
+    user_id = (
+        sender.get("user_id")
+        or sender.get("id")
+    )
+
+    avatar_url = (
+        sender.get("avatar_url")
+        or sender.get("full_avatar_url")
+    )
+
+    if not user_id or not avatar_url:
+
+        return
+
+    if user_id in avatar_sent_max_users:
+
+        return
+
+    avatar_sent_max_users.add(user_id)
+
+    try:
+
+        response = requests.get(
+            avatar_url,
+            timeout=30
+        )
+
+        if response.ok:
+
+            send_telegram_photo(
+                response.content,
+                "avatar.jpg"
+            )
+
+            logging.info(
+                "Relayed MAX avatar of user %s to Telegram",
+                user_id
+            )
+
+        else:
+
+            logging.warning(
+                "MAX avatar download failed -> %s",
+                response.status_code
+            )
+
+    except Exception:
+
+        logging.exception(
+            "Error relaying MAX avatar to Telegram"
+        )
 
 
 # =========================================================
@@ -1531,6 +1893,36 @@ def handle_telegram_message(message):
         message
     )
 
+    tg_message_id = message.get("message_id")
+
+    # -----------------------------------------------------
+    # Если это ответ на сообщение — ищем, какому сообщению
+    # в MAX он соответствует.
+    # -----------------------------------------------------
+
+    reply_to_message = message.get("reply_to_message")
+
+    reply_to_tg_id = (
+        reply_to_message.get("message_id")
+        if isinstance(reply_to_message, dict)
+        else None
+    )
+
+    reply_to_max_mid = (
+        tg_to_max_id.get(reply_to_tg_id)
+        if reply_to_tg_id
+        else None
+    )
+
+    # -----------------------------------------------------
+    # Аватар (один раз на пользователя за сессию)
+    # -----------------------------------------------------
+
+    maybe_relay_telegram_avatar_to_max(
+        user_id,
+        sender_name
+    )
+
     logging.info(
         "========================================"
     )
@@ -1569,8 +1961,14 @@ def handle_telegram_message(message):
             max_text
         )
 
-        send_max_text(
-            max_text
+        result = send_max_text(
+            max_text,
+            reply_to_mid=reply_to_max_mid
+        )
+
+        remember_message_pair(
+            tg_message_id,
+            extract_max_message_id(result)
         )
 
     # =====================================================
@@ -1617,9 +2015,15 @@ def handle_telegram_message(message):
                         f"отправил(а) фото:"
                     )
 
-                    send_max_image(
+                    result = send_max_image(
                         file_bytes,
-                        filename
+                        filename,
+                        reply_to_mid=reply_to_max_mid
+                    )
+
+                    remember_message_pair(
+                        tg_message_id,
+                        extract_max_message_id(result)
                     )
 
                 else:
@@ -1687,9 +2091,15 @@ def handle_telegram_message(message):
                         f"отправил(а) голосовое:"
                     )
 
-                    send_max_audio(
+                    result = send_max_audio(
                         file_bytes,
-                        filename
+                        filename,
+                        reply_to_mid=reply_to_max_mid
+                    )
+
+                    remember_message_pair(
+                        tg_message_id,
+                        extract_max_message_id(result)
                     )
 
                 else:
@@ -1749,9 +2159,15 @@ def handle_telegram_message(message):
                         f"отправил(а) аудио:"
                     )
 
-                    send_max_audio(
+                    result = send_max_audio(
                         file_bytes,
-                        filename
+                        filename,
+                        reply_to_mid=reply_to_max_mid
+                    )
+
+                    remember_message_pair(
+                        tg_message_id,
+                        extract_max_message_id(result)
                     )
 
                 else:
@@ -1814,9 +2230,15 @@ def handle_telegram_message(message):
                         f"отправил(а) файл:"
                     )
 
-                    send_max_file(
+                    result = send_max_file(
                         file_bytes,
-                        filename
+                        filename,
+                        reply_to_mid=reply_to_max_mid
+                    )
+
+                    remember_message_pair(
+                        tg_message_id,
+                        extract_max_message_id(result)
                     )
 
                 else:
@@ -2080,8 +2502,6 @@ def get_max_sender_name(message):
 
 # =========================================================
 # MAX -> TELEGRAM
-#
-# ЭТУ ЧАСТЬ НЕ ТРОГАЕМ ПО ЛОГИКЕ.
 # =========================================================
 
 def handle_max_message(event):
@@ -2107,13 +2527,15 @@ def handle_max_message(event):
         message
     )
 
+    sender = message.get("sender")
+
     logging.info(
         "MAX sender: %s",
         sender_name
     )
 
     # =====================================================
-    # BODY
+    # ID этого сообщения (для связки/удаления) и реплай
     # =====================================================
 
     body = message.get(
@@ -2126,6 +2548,37 @@ def handle_max_message(event):
     ):
 
         body = {}
+
+    max_message_id = (
+        body.get("mid")
+        or message.get("mid")
+    )
+
+    link = (
+        message.get("link")
+        or body.get("link")
+    )
+
+    reply_to_max_mid = None
+
+    if isinstance(link, dict) and link.get("type") == "reply":
+
+        reply_to_max_mid = link.get(
+            "message",
+            {}
+        ).get("mid")
+
+    reply_to_tg_id = (
+        max_to_tg_id.get(reply_to_max_mid)
+        if reply_to_max_mid
+        else None
+    )
+
+    # -----------------------------------------------------
+    # Аватар (один раз на пользователя за сессию)
+    # -----------------------------------------------------
+
+    maybe_relay_max_avatar_to_telegram(sender)
 
     # =====================================================
     # TEXT
@@ -2153,8 +2606,14 @@ def handle_max_message(event):
             telegram_text
         )
 
-        send_telegram_text(
-            telegram_text
+        result = send_telegram_text(
+            telegram_text,
+            reply_to_message_id=reply_to_tg_id
+        )
+
+        remember_message_pair(
+            extract_telegram_message_id(result),
+            max_message_id
         )
 
     # =====================================================
@@ -2245,12 +2704,18 @@ def handle_max_message(event):
 
                     if response.ok:
 
-                        send_telegram_photo(
+                        tg_result = send_telegram_photo(
                             response.content,
                             "image.jpg",
                             caption=(
                                 f"👤 {sender_name}"
-                            )
+                            ),
+                            reply_to_message_id=reply_to_tg_id
+                        )
+
+                        remember_message_pair(
+                            extract_telegram_message_id(tg_result),
+                            max_message_id
                         )
 
                 except Exception:
@@ -2287,13 +2752,19 @@ def handle_max_message(event):
 
                     if response.ok:
 
-                        send_telegram_voice(
+                        tg_result = send_telegram_voice(
                             response.content,
-                            "voice.ogg"
+                            "voice.ogg",
+                            reply_to_message_id=reply_to_tg_id
                         )
 
                         send_telegram_text(
                             f"👤 {sender_name}"
+                        )
+
+                        remember_message_pair(
+                            extract_telegram_message_id(tg_result),
+                            max_message_id
                         )
 
                 except Exception:
@@ -2345,9 +2816,15 @@ def handle_max_message(event):
                             f"отправил(а) файл:"
                         )
 
-                        send_telegram_document(
+                        tg_result = send_telegram_document(
                             response.content,
-                            filename
+                            filename,
+                            reply_to_message_id=reply_to_tg_id
+                        )
+
+                        remember_message_pair(
+                            extract_telegram_message_id(tg_result),
+                            max_message_id
                         )
 
                 except Exception:
@@ -2384,12 +2861,18 @@ def handle_max_message(event):
 
                     if response.ok:
 
-                        send_telegram_video(
+                        tg_result = send_telegram_video(
                             response.content,
                             "video.mp4",
                             caption=(
                                 f"👤 {sender_name}"
-                            )
+                            ),
+                            reply_to_message_id=reply_to_tg_id
+                        )
+
+                        remember_message_pair(
+                            extract_telegram_message_id(tg_result),
+                            max_message_id
                         )
 
                 except Exception:
@@ -2403,6 +2886,91 @@ def handle_max_message(event):
                 logging.warning(
                     "MAX video has no direct URL"
                 )
+
+
+# =========================================================
+# MAX -> TELEGRAM: УДАЛЕНИЕ СООБЩЕНИЯ
+# =========================================================
+#
+# ВАЖНО:
+# Мы не можем гарантировать заранее точное имя события и поля
+# с ID удалённого сообщения — это зависит от того, как именно
+# MAX формирует такие уведомления. Ниже проверяются несколько
+# наиболее вероятных вариантов. Полное "сырое" событие в любом
+# случае попадает в лог (logging.info ниже) — если удаление
+# не сработает с первого раза, найдите в логах Render строку
+# "MAX deletion event:" и пришлите её мне, чтобы я поправила
+# нужное поле.
+# =========================================================
+
+def handle_max_message_deleted(event):
+
+    logging.info(
+        "MAX deletion event: %s",
+        str(event)[:5000]
+    )
+
+    message = event.get(
+        "message",
+        event
+    )
+
+    removed_mid = None
+
+    if isinstance(message, dict):
+
+        body = message.get("body", {})
+
+        removed_mid = (
+            message.get("mid")
+            or (
+                body.get("mid")
+                if isinstance(body, dict)
+                else None
+            )
+        )
+
+    if not removed_mid:
+
+        removed_mid = (
+            event.get("mid")
+            or event.get("message_id")
+        )
+
+    if not removed_mid:
+
+        logging.warning(
+            "MAX deletion event without a recognizable message id"
+        )
+
+        return
+
+    tg_id = max_to_tg_id.get(removed_mid)
+
+    if not tg_id:
+
+        logging.info(
+            "No linked Telegram message found for "
+            "deleted MAX message %s",
+            removed_mid
+        )
+
+        return
+
+    telegram_api(
+        "deleteMessage",
+        data={
+            "chat_id": TELEGRAM_CHAT_ID,
+            "message_id": tg_id
+        }
+    )
+
+    logging.info(
+        "Deleted linked Telegram message %s "
+        "(MAX message %s was removed)",
+        tg_id,
+        removed_mid
+    )
 
 
 # =========================================================
@@ -2476,6 +3044,15 @@ def max_webhook():
                 event
             )
 
+        elif event_type in (
+            "message_removed",
+            "message_deleted"
+        ):
+
+            handle_max_message_deleted(
+                event
+            )
+
         return jsonify({
             "ok": True
         }), 200
@@ -2512,17 +3089,6 @@ def anketa_page():
 def submit_anketa():
     """
     Обработка отправленной анкеты из веб-формы.
-
-    ИСПРАВЛЕНО:
-    1. platform теперь определяется надёжно (см. anketa.html) и,
-       если по какой-то причине не пришёл вообще, используется "telegram"
-       по умолчанию (раньше здесь была ошибка: если platform приходил
-       как null, значение по умолчанию не подставлялось, и анкета
-       всегда уходила в Max).
-    2. Анкета теперь ВСЕГДА отправляется в ОБА чата — и в Telegram,
-       и в Max — независимо от выбранной платформы.
-    3. Текст сообщения очищен от эмодзи и HTML-тегов, чтобы одинаково
-       красиво выглядеть в обоих мессенджерах.
     """
 
     try:
