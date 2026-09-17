@@ -3,6 +3,9 @@ import time
 import json
 import logging
 import requests
+import sqlite3
+import hashlib
+import threading
 import urllib3
 
 from flask import Flask, request, jsonify
@@ -153,6 +156,81 @@ ANKETA_QUESTIONS = [
 
 # Хранилище пользователей, заполняющих анкету
 users_anketa = {}
+
+# =========================================================
+# ДЕДУПЛИКАЦИЯ / ЗАЩИТА ОТ ПОВТОРНЫХ ОТПРАВОК
+# =========================================================
+STATE_DB = os.getenv("STATE_DB", "bridge_state.db")
+
+def db_connection():
+    conn = sqlite3.connect(STATE_DB, timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+def init_state_db():
+    conn = db_connection()
+    try:
+        conn.execute("""CREATE TABLE IF NOT EXISTS processed_events (source TEXT NOT NULL, event_key TEXT NOT NULL, created_at REAL NOT NULL, PRIMARY KEY(source, event_key))""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS anketa_submissions (submission_key TEXT PRIMARY KEY, created_at REAL NOT NULL, chat_url TEXT NOT NULL)""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS bot_anketa_sent (user_id TEXT PRIMARY KEY, created_at REAL NOT NULL)""")
+        conn.commit()
+    finally:
+        conn.close()
+
+def claim_event(source, event_key):
+    if event_key is None or event_key == "":
+        return True
+    conn = db_connection()
+    try:
+        cur = conn.execute("INSERT OR IGNORE INTO processed_events(source,event_key,created_at) VALUES(?,?,?)", (str(source), str(event_key), time.time()))
+        conn.commit()
+        if cur.rowcount != 1:
+            logging.warning("Duplicate %s event ignored: %s", source, event_key)
+            return False
+        return True
+    finally:
+        conn.close()
+
+def anketa_submission_key(data):
+    supplied_id = data.get("submission_id") or data.get("request_id")
+    if supplied_id:
+        raw = "id:" + str(supplied_id)
+    else:
+        fields = [data.get("name"), data.get("age"), data.get("zodiac"), data.get("goal"), data.get("children"), data.get("friendship"), data.get("platform") or "telegram"]
+        raw = "|".join("" if x is None else str(x).strip() for x in fields)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+def claim_anketa_submission(submission_key, chat_url, window_seconds=900):
+    now = time.time()
+    conn = db_connection()
+    try:
+        row = conn.execute("SELECT created_at, chat_url FROM anketa_submissions WHERE submission_key=?", (submission_key,)).fetchone()
+        if row and now - float(row[0]) < window_seconds:
+            return False, row[1]
+        conn.execute("INSERT OR REPLACE INTO anketa_submissions(submission_key,created_at,chat_url) VALUES(?,?,?)", (submission_key, now, chat_url))
+        conn.commit()
+        return True, chat_url
+    finally:
+        conn.close()
+
+def mark_bot_anketa_sent(user_id):
+    conn = db_connection()
+    try:
+        cur = conn.execute("INSERT OR IGNORE INTO bot_anketa_sent(user_id,created_at) VALUES(?,?)", (str(user_id), time.time()))
+        conn.commit()
+        return cur.rowcount == 1
+    finally:
+        conn.close()
+
+def clear_bot_anketa_sent(user_id):
+    conn = db_connection()
+    try:
+        conn.execute("DELETE FROM bot_anketa_sent WHERE user_id=?", (str(user_id),))
+        conn.commit()
+    finally:
+        conn.close()
+
+init_state_db()
 
 
 # =========================================================
@@ -1784,6 +1862,7 @@ def start_anketa(user_id):
         user_id
     )
 
+    clear_bot_anketa_sent(user_id)
     users_anketa[user_id] = {
         "current_question": 0,
         "data": {}
@@ -2385,6 +2464,10 @@ def telegram_webhook():
                 "ok": True
             }), 200
 
+        update_id = update.get("update_id")
+        if update_id is not None and not claim_event("telegram", str(update_id)):
+            return jsonify({"ok": True}), 200
+
         # -------------------------------------------------
         # CALLBACK QUERY (нажатие на кнопку)
         # -------------------------------------------------
@@ -2413,34 +2496,36 @@ def telegram_webhook():
             # Подтверждение анкеты "Да"
             if callback_data == f"anketa_confirm_yes_{user_id}":
 
+                first_submission = mark_bot_anketa_sent(user_id)
+
                 send_telegram_text_with_buttons(
                     user_id,
                     "🎉 Отлично! Выберите, куда вступить:\n\n"
                     "👇 Нажмите одну из кнопок ниже:",
                     {
                         "inline_keyboard": [
-                            [
-                                {
-                                    "text": "📱 Вступить в Telegram",
-                                    "url": TELEGRAM_CHAT_URL
-                                }
-                            ],
-                            [
-                                {
-                                    "text": "💬 Вступить в Max",
-                                    "url": MAX_CHAT_URL
-                                }
-                            ]
+                            [{
+                                "text": "📱 Вступить в Telegram",
+                                "url": TELEGRAM_CHAT_URL
+                            }],
+                            [{
+                                "text": "💬 Вступить в Max",
+                                "url": MAX_CHAT_URL
+                            }]
                         ]
                     }
                 )
 
-                # Отправляем анкету в оба чата
-                send_anketa_to_telegram_chat(user_id)
-                send_anketa_to_max_chat(user_id)
+                if first_submission and user_id in users_anketa:
+                    send_anketa_to_telegram_chat(user_id)
+                    send_anketa_to_max_chat(user_id)
+                else:
+                    logging.info(
+                        "Anketa for Telegram user %s was already submitted; duplicate ignored",
+                        user_id
+                    )
 
-                # Удаляем пользователя из процесса заполнения
-                del users_anketa[user_id]
+                users_anketa.pop(user_id, None)
 
             # Подтверждение анкеты "Нет"
             elif callback_data == f"anketa_confirm_no_{user_id}":
@@ -3148,6 +3233,18 @@ def max_webhook():
             event_type
         )
 
+        event_message = event.get("message") if isinstance(event.get("message"), dict) else event
+        event_body = event_message.get("body") if isinstance(event_message, dict) else {}
+        if not isinstance(event_body, dict):
+            event_body = {}
+        max_event_key = (
+            event.get("update_id") or event.get("event_id") or event.get("id")
+            or event_body.get("mid") or event_message.get("mid")
+            or event.get("message_id")
+        )
+        if max_event_key is not None and not claim_event("max", str(max_event_key)):
+            return jsonify({"ok": True}), 200
+
         if event_type in (
             "message_created",
             "message"
@@ -3200,17 +3297,12 @@ def anketa_page():
 
 @app.route("/submit-anketa", methods=["POST"])
 def submit_anketa():
-    """
-    Обработка отправленной анкеты из веб-формы.
-    """
-
+    """Обработка анкеты из веб-формы без ожидания ответа MAX API."""
     try:
         data = request.get_json(silent=True) or {}
-
         logging.info("Web anketa submitted: %s", data)
 
-        platform = data.get("platform") or "telegram"
-
+        platform = str(data.get("platform") or "telegram").lower()
         anketa_data = {
             "name": data.get("name"),
             "age": data.get("age"),
@@ -3220,8 +3312,6 @@ def submit_anketa():
             "friendship": data.get("friendship")
         }
 
-        # Единый чистый текст без эмодзи и HTML-тегов —
-        # одинаково хорошо смотрится и в Telegram, и в Max.
         anketa_message = (
             "Новый участник присоединился!\n\n"
             f"Имя: {anketa_data['name']}\n"
@@ -3233,34 +3323,31 @@ def submit_anketa():
             "Добро пожаловать в наше сообщество!"
         )
 
-        # Отправляем в ОБА чата всегда
-        send_telegram_text_with_buttons(
-            TELEGRAM_CHAT_ID,
-            anketa_message,
-            None
-        )
+        chat_url = MAX_CHAT_URL if platform == "max" else TELEGRAM_CHAT_URL
+        submission_key = anketa_submission_key(data)
+        is_new, saved_url = claim_anketa_submission(submission_key, chat_url)
 
-        send_max_text(anketa_message)
+        if not is_new:
+            logging.warning("Duplicate web anketa ignored: key=%s", submission_key)
+            return jsonify({"success": True, "chat_url": saved_url, "duplicate": True}), 200
 
-        # Ссылка "Вступить" ведёт туда, что выбрал человек
-        if platform == "max":
-            chat_url = MAX_CHAT_URL
-        else:
-            chat_url = TELEGRAM_CHAT_URL
+        def notify_chats():
+            try:
+                send_telegram_text_with_buttons(TELEGRAM_CHAT_ID, anketa_message, None)
+            except Exception:
+                logging.exception("Web anketa Telegram notification error")
+            try:
+                send_max_text(anketa_message)
+            except Exception:
+                logging.exception("Web anketa MAX notification error")
 
-        return jsonify({
-            "success": True,
-            "chat_url": chat_url
-        }), 200
+        threading.Thread(target=notify_chats, name="anketa-notify", daemon=True).start()
+
+        return jsonify({"success": True, "chat_url": chat_url}), 200
 
     except Exception as e:
-
         logging.exception("Error submitting anketa")
-
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 # =========================================================
